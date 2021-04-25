@@ -1,0 +1,36 @@
+#!/bin/bash
+
+# Recompile
+# mvn clean install
+
+# Check if compiled ok
+#if [ $? -ne 0 ]; then
+#    echo "error: failed to compile" >&2
+#    exit 1
+#fi
+
+# FOR CLIENT:
+# 00:19:45.559 ERROR [main] com.io7m.aeron_guide.take2.EchoClient: usage: directory remote-address remote-data-port remote-control-port
+#
+# FOR SERVER
+
+AERON_SERVER_PORT=33000
+#AERON_SERVER_IP=127.0.0.1
+
+# moon (laptop)
+AERON_SERVER_IP=192.168.1.118
+
+AERON_CLIENT_PORT=33001
+#AERON_CLIENT_IP=127.0.0.1
+
+# sixcore
+AERON_CLIENT_IP=192.168.1.132
+
+AERON_CLIENT_DIR=/run/shm/my-aeron-client-take2
+
+# Let's rock!
+JAVA_HOME=/usr/lib/jvm/java-8-openjdk-amd64 \
+  mvn \
+  "-Dexec.args=-classpath %classpath com.io7m.aeron_guide.take2.EchoClient ${AERON_CLIENT_DIR} ${AERON_SERVER_IP} 44000 44001" \
+   -Dexec.executable=/usr/lib/jvm/java-8-openjdk-amd64/bin/java \
+   org.codehaus.mojo:exec-maven-plugin:1.5.0:exec
