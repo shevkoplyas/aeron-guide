@@ -16,7 +16,7 @@ public final class EchoSessions
    * The inclusive upper bound of the reserved sessions range.
    */
 
-  public static final int RESERVED_SESSION_ID_HIGH = 2147483647;
+  public static final int RESERVED_SESSION_ID_HIGH = 0x7FFFFFFF; // same as 2147483647, but much more readable ;)
 
   private EchoSessions()
   {

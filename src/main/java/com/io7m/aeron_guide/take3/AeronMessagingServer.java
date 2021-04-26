@@ -43,7 +43,9 @@ public final class AeronMessagingServer implements Closeable {
     private static final Logger LOG = LoggerFactory.getLogger(AeronMessagingServer.class);
 
     static {
-        ECHO_STREAM_ID = 0x2044f002;
+        // We also specify a stream ID when creating the subscription. Aeron is capable of
+        // multiplexing several independent streams of messages into a single connection.
+        ECHO_STREAM_ID = 0x100500ff;
     }
 
     private final MediaDriver media_driver;
@@ -203,7 +205,7 @@ public final class AeronMessagingServer implements Closeable {
                                         length,
                                         header));
 
-                Clock server_clock = Clock.systemUTC();
+                Clock clock = Clock.systemUTC();
 
                 /**
                  * main loop
@@ -226,7 +228,7 @@ public final class AeronMessagingServer implements Closeable {
                         // [Q] How do we use different channels ECHO_STREAM_ID ?
                         // Every 5 sec send private message to all clients
                         if (debug_iteration_counter % 50 == 0) {
-                            this.clients.sent_private_message_to_all_clients("server ----private---> client: local server time is " + server_clock.instant().toString());
+                            this.clients.sent_private_message_to_all_clients("server ----private---> client: local server time is " + clock.instant().toString());
                         }
 
                         // Every 7 sec send PUBLIC message via all_clients_publication
@@ -243,6 +245,8 @@ public final class AeronMessagingServer implements Closeable {
                             }
                         }
                     });
+                    
+                    // TODO: improve things with server polling / sleeping / ...
                     try {
                         Thread.sleep(100L);
                     } catch (final InterruptedException e) {

@@ -19,6 +19,7 @@ import java.net.InetAddress;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.security.SecureRandom;
+import java.time.Clock;
 import java.util.Objects;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -31,7 +32,7 @@ public final class AeronMessagingClient implements Closeable {
 
     private static final Logger LOG = LoggerFactory.getLogger(AeronMessagingClient.class);
 
-    private static final int ECHO_STREAM_ID = 0x2044f002;
+    private static final int ECHO_STREAM_ID = 0x100500ff;
 
     private static final Pattern PATTERN_ERROR
             = Pattern.compile("^ERROR (.*)$");
@@ -208,7 +209,7 @@ public final class AeronMessagingClient implements Closeable {
          */
         try (final Subscription private_subscription = this.setupConnectSubscription()) {
             try (final Publication private_publication = this.setupConnectPublication()) {
-                this.runEchoLoop(
+                this.runMainMessageProcessingLoop(
                         buffer,
                         session_name,
                         private_subscription,
@@ -222,7 +223,7 @@ public final class AeronMessagingClient implements Closeable {
         }
     }
 
-    private void runEchoLoop(
+    private void runMainMessageProcessingLoop(
             final UnsafeBuffer buffer,
             final String session_name,
             final Subscription private_subscription,
@@ -241,42 +242,49 @@ public final class AeronMessagingClient implements Closeable {
                         (data, offset, length, header)
                         -> onEchoResponse(session_name, data, offset, length));
 
+        Clock clock = Clock.systemUTC();
+
         /**
          * main loop
          */
         int packets_count = 0;
         while (packets_count++ < 1000) {
 
-            /**
-             * Send ECHO messages to the server and wait for responses. (via
-             * private publication)
-             */
+            // Send ECHO messages to the server and wait for responses. (via private publication)
             EchoMessages.sendMessage(
                     private_publication,
                     buffer,
                     "ECHO " + Long.toUnsignedString(this.random.nextLong(), 16));
 
+            // Also send some random message (to check the server won't barf) - also via private publication
             EchoMessages.sendMessage(
                     private_publication,
                     buffer,
-                    "client ---private---> server: Hi server!");
+                    "client ---private---> server: Hi server! My local client-time is " + clock.instant().toString());
 
-            // Just for fun: let's send some other msg to the server via all_client_publication!
+            // Just for fun: let's periodically send some other message to the server via all_client_publication!
             if (packets_count % 3 == 0) {
                 EchoMessages.sendMessage(
                         all_client_publication,
                         buffer,
-                        "client ---all_client_publication---> server: " + Long.toUnsignedString(this.random.nextLong(), 16));
+                        "client ---all_client_publication---> server: Random number: " + Long.toUnsignedString(this.random.nextLong(), 16) + ". Local client-time is " + clock.instant().toString());
             }
 
+            // Time to try to receive (poll) messages from all subscriptions
             for (int index = 0; index < 100; ++index) {
-                private_subscription.poll(private_subscription_message_handler, 1000);
-                all_client_subscription.poll(all_client_subscription_message_handler, 1000);
+                // We have 1 private subscription (server sends messages to only this client)
+                int fragments_received = private_subscription.poll(private_subscription_message_handler, 1000);
+                
+                // We have "all client" subscription, which sends the same things to all connected clients.
+                fragments_received += all_client_subscription.poll(all_client_subscription_message_handler, 1000);
 
-                try {
-                    Thread.sleep(10L);
-                } catch (final InterruptedException e) {
-                    Thread.currentThread().interrupt();
+                // Sleep only if no fragments received
+                if (fragments_received == 0){
+                    try {
+                        Thread.sleep(10L);
+                    } catch (final InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                    }
                 }
             }
         }
