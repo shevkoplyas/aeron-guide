@@ -307,7 +307,7 @@ public final class ClientState {
         }
     }
     
-    public void poll() {
+    public int poll() {
         this.executor.assertIsExecutorThread();
         
         final Iterator<Map.Entry<Integer, AeronMessagingServerDuologue>> iter
@@ -317,6 +317,9 @@ public final class ClientState {
          * Get the current time; used to expire duologues.
          */
         final Instant now = this.clock.instant();
+        
+        // Let's keep track on total sum of all poll'ed fragmetns
+        int polled_fragments_count = 0;
         
         while (iter.hasNext()) {
             final Map.Entry<Integer, AeronMessagingServerDuologue> entry = iter.next();
@@ -356,7 +359,8 @@ public final class ClientState {
             /**
              * Otherwise, poll the duologue for activity.
              */
-            duologue.poll();
+            polled_fragments_count += duologue.poll();
         }
+        return polled_fragments_count;
     }
 }

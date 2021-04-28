@@ -162,9 +162,9 @@ public final class AeronMessagingServerDuologue implements AutoCloseable {
     /**
      * Poll the duologue for activity.
      */
-    public void poll() {
+    public int poll() {
         this.exec.assertIsExecutorThread();
-        this.subscription.poll(this.handler, 10);
+        return this.subscription.poll(this.handler, 10);
     }
 
     /**
@@ -239,7 +239,7 @@ public final class AeronMessagingServerDuologue implements AutoCloseable {
 
     private void onClientDisconnected(
             final Image image) {
-        this.exec.execute(() -> {
+        this.exec.my_call(() -> {
             final int image_session = image.sessionId();
             final String session_name = Integer.toString(image_session);
             final InetAddress address = EchoAddresses.extractAddress(image.sourceIdentity());
@@ -250,12 +250,13 @@ public final class AeronMessagingServerDuologue implements AutoCloseable {
             } else {
                 LOG.debug("[{}] client {} disconnected", session_name, address);
             }
+            return 0; // this value does not really matter, we'll use Callable<Integer> to return number of received fragments and decide if we need to sleep or not in the main loop.
         });
     }
 
     private void onClientConnected(
             final Image image) {
-        this.exec.execute(() -> {
+        this.exec.my_call(() -> {
             final InetAddress remote_address
                     = EchoAddresses.extractAddress(image.sourceIdentity());
 
@@ -266,6 +267,7 @@ public final class AeronMessagingServerDuologue implements AutoCloseable {
                 LOG.error("connecting client has wrong address: {}",
                         remote_address);
             }
+            return 0; // this value does not really matter, we'll use Callable<Integer> to return number of received fragments and decide if we need to sleep or not in the main loop.
         });
     }
 

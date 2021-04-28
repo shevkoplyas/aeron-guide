@@ -26,12 +26,13 @@ import java.util.HashMap;
 import java.util.Iterator;
 import java.util.Map;
 import java.util.Objects;
+import java.util.concurrent.Future;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
- * A mindlessly simple Echo server.
- * Found here: http://www.io7m.com/documents/aeron-guide/#client_server_take_2
+ * A mindlessly simple Echo server. Found here:
+ * http://www.io7m.com/documents/aeron-guide/#client_server_take_2
  */
 public final class AeronMessagingServer implements Closeable {
 
@@ -189,8 +190,7 @@ public final class AeronMessagingServer implements Closeable {
     /**
      * Run the server, returning when the server is finished.
      */
-    private int debug_iteration_counter = 0;
-
+//    private Clock debug_clock = new Clock();
     public void run() {
         try (final Publication all_clients_publication = this.setupAllClientsPublication()) {
             try (final Subscription all_clients_subscription = this.setupAllClientsSubscription()) {
@@ -212,46 +212,79 @@ public final class AeronMessagingServer implements Closeable {
                  */
                 UnsafeBuffer tmp_send_buffer = new UnsafeBuffer(BufferUtil.allocateDirectAligned(1024, 16));
                 while (true) {
-                    debug_iteration_counter++;
-                    this.executor.execute(() -> {
+                    long epoch_ms = clock.millis();
+
+//                    Future<Integer> future_polled_fragments_count = this.executor.execute(() -> {
+                    Future<Integer> future_polled_fragments_count = this.executor.my_call(() -> {
                         // Dimon: this will subscirption.pull() on "allClientSubscription",
                         //        which triggers: this::onInitialClientConnected and this::onInitialClientDisconnected);
-                        all_clients_subscription.poll(handler, 100);
+                        Integer polled_fragmetns_count = 0;
+                        polled_fragmetns_count += all_clients_subscription.poll(handler, 100);
 
                         // Dimon: This will iterate all clients subscription.poll(this.handler, 10);
                         //        which will trigger: onMessageReceived.onMessageReceived
-                        this.clients.poll();
+                        polled_fragmetns_count += this.clients.poll();
                         // Basically server passively pulling messages from "all clients" channel and 
                         // from all individual connected clients channels, reacting on them (not sending anything proactively)
 
                         // Let's proactively send some message to all connected clients.
                         // [Q] How do we use different channels ECHO_STREAM_ID ?
                         // Every 5 sec send private message to all clients
-                        if (debug_iteration_counter % 50 == 0) {
+                        if (epoch_ms % 5000 == 0) {
                             this.clients.sent_private_message_to_all_clients("server ----private---> client: local server time is " + clock.instant().toString());
                         }
 
-                        // Every 7 sec send PUBLIC message via all_clients_publication
-                        if (debug_iteration_counter % 70 == 0) {
+                        // Every 7 sec send PUBLISH message via all_clients_publication
+                        if (epoch_ms % 7000 == 0) {
                             try {
-                                if (all_clients_publication.isConnected()){
-                                EchoMessages.sendMessage(
-                                        all_clients_publication,
-                                        tmp_send_buffer,
-                                        "server ----all_clients_publication---> clients: some message to all connected clients!");
+                                if (all_clients_publication.isConnected()) {
+                                    EchoMessages.sendMessage(
+                                            all_clients_publication,
+                                            tmp_send_buffer,
+                                            "server ----all_clients_publication---> clients: some message to all connected clients!");
                                 }
                             } catch (IOException ex) {
                                 LOG.error("Exception while trying to sendMessage() via all_clients_publication. Details: ", ex);
                             }
                         }
+                        return polled_fragmetns_count;
                     });
-                    
-                    // TODO: improve things with server polling / sleeping / ...
+
+                    // Now wait for executor.execute() to finish with our lambda (the original code would sleep 0.1sec and keep
+                    // the loop going effectivevly calling ExecutorService.submit(runnable) over and over either overfilling the queue or
+                    // making it too slow (sleeping way too much time, which will affect our messaging client/server perfomance).
+                    // Let's simply re-submit polling again without any sleep if previous poll got some fragments from the subscription.
+                    // If no fragments extracted on the previous poll, then sleep 1ms and submit polling iteration again.
+                    // And only submit() polling runnable lambda to the executor in case the previous one is complete (there's no sense of piling them up).
+//                    while (!future_polled_fragments_count.isDone() && !future_polled_fragments_count.isCancelled()) {
+//                        // Previously submitted task is not complete yet. Just keep waiting and keep checking every 1ms.
+//                        try {
+//                            Thread.sleep(1L);
+//                        } catch (final InterruptedException e) {
+//                            Thread.currentThread().interrupt();
+//                        }
+//                    }
+                    // Instead of "while(future.isDone()" we can simply "future.get()", which is blocking (untill lambda comletes
+                    Integer polled_fragments_count = 0;
                     try {
-                        Thread.sleep(100L);
-                    } catch (final InterruptedException e) {
+                        polled_fragments_count = future_polled_fragments_count.get();  // throws InterruptedException, ExecutionException
+//                    } catch (final InterruptedException e) {
+                    } catch (final Exception ex) {
                         Thread.currentThread().interrupt();
+                        LOG.error("Main loop: unexpected exception while waiting for future_polled_fragments_count. Details: " + ex);
                     }
+
+                    // Previous polling complete. Check if we got any fragments (then repeat polling w/o extra delay).
+                    if (polled_fragments_count == 0) {
+                        // We got no fragments from subscription. Let's fall asleep for 1ms
+                        try {
+                            Thread.sleep(1L);
+                        } catch (final InterruptedException e) {
+                            Thread.currentThread().interrupt();
+                        }
+                    }
+                    // else: do nothing, just continue to the next "main loop" iteration
+
                 }
             }
         }
@@ -271,17 +304,18 @@ public final class AeronMessagingServer implements Closeable {
         final Integer session_boxed
                 = Integer.valueOf(header.sessionId());
 
-        this.executor.execute(() -> {
-            try {
-                this.clients.onClientMessage(
-                        publication, // Dimon: we simply pass "publication" to know where to reply (if needed) and message is now a simple String.
-                        session_name,
-                        session_boxed,
-                        message);
-            } catch (final Exception e) {
-                LOG.error("could not process client message: ", e);
-            }
-        });
+// Dimon: disabling extra layer of executor.execute() call here since this whole f-n "onAllClientsClientMessage()" is alrady called from main loop via executor.execute()
+//        this.executor.execute(() -> {
+        try {
+            this.clients.onClientMessage(
+                    publication, // Dimon: we simply pass "publication" to know where to reply (if needed) and message is now a simple String.
+                    session_name,
+                    session_boxed,
+                    message);
+        } catch (final Exception e) {
+            LOG.error("could not process client message: ", e);
+        }
+//        });
     }
 
     /**
@@ -310,7 +344,7 @@ public final class AeronMessagingServer implements Closeable {
 
     private void onInitialClientConnected(
             final Image image) {
-        this.executor.execute(() -> {
+        this.executor.my_call(() -> {
             LOG.debug(
                     "[{}] initial client connected ({})",
                     Integer.toString(image.sessionId()),
@@ -319,18 +353,20 @@ public final class AeronMessagingServer implements Closeable {
             this.clients.onInitialClientConnected(
                     image.sessionId(),
                     EchoAddresses.extractAddress(image.sourceIdentity()));
+            return 0; // this value does not really matter, we'll use Callable<Integer> to return number of received fragments and decide if we need to sleep or not in the main loop.
         });
     }
 
     private void onInitialClientDisconnected(
             final Image image) {
-        this.executor.execute(() -> {
+        this.executor.my_call(() -> {
             LOG.debug(
                     "[{}] initial client disconnected ({})",
                     Integer.toString(image.sessionId()),
                     image.sourceIdentity());
 
             this.clients.onInitialClientDisconnected(image.sessionId());
+            return 0; // this value does not really matter, we'll use Callable<Integer> to return number of received fragments and decide if we need to sleep or not in the main loop.
         });
     }
 
