@@ -1,4 +1,4 @@
-package com.io7m.aeron_guide.take3;
+package com.io7m.aeron_guide.take4;
 
 import io.aeron.Aeron;
 import io.aeron.ConcurrentPublication;

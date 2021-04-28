@@ -35,3 +35,8 @@ Mark's work is licensed under a Creative Commons Attribution 4.0 International L
    - working on it's own thread
    - is accepting messages by exposed enqueue(String message) method
    - is adding all received messages into concurrent list(s)
+
+ Next "take4" added, which is no longer ECHO server, instead adding queues for all the incoming and outgoing messages.
+ The goal of "take4" is to make it generic bass to exchange messages between a server and arbitrary number (<100) clients
+ under good load (max bandwidth yet to be determined after "take4" is compleete).
+ 

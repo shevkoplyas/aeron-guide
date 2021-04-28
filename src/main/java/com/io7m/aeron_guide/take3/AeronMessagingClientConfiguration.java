@@ -10,7 +10,7 @@ import java.nio.file.Path;
  */
 
 @Value.Immutable
-public interface EchoClientConfiguration
+public interface AeronMessagingClientConfiguration
 {
   /**
    * @return The base directory that will be used for the client; should be unique for each client instance
