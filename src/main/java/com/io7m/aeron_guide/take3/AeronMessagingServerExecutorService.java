@@ -9,7 +9,7 @@ import java.util.concurrent.Future;
  * that they are submitted on a single <i>executor thread</i>.
  */
 
-public interface EchoServerExecutorService extends AutoCloseable//, Executor
+public interface AeronMessagingServerExecutorService extends AutoCloseable//, Executor
 {
   /**
    * @return {@code true} if the caller of this method is running on the executor thread

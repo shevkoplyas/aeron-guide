@@ -34,19 +34,19 @@ public final class AeronMessagingServerDuologue implements AutoCloseable {
             = Pattern.compile("^ECHO (.*)$");
 
     private final UnsafeBuffer send_buffer;
-    private final EchoServerExecutorService exec;
+    private final AeronMessagingServerExecutorService exec;
     private final Instant initial_expire;
     private final InetAddress owner;
     private final int port_data;
     private final int port_control;
     private final int session;
-    private final FragmentAssembler handler;
+    private final FragmentAssembler private_message_handler;  // process incoming "private" messages from the client.
     private boolean closed;
-    private Publication publication;
-    private Subscription subscription;
+    private Publication private_publication;     // "private_" means "per individual connected client", not shared with others (liek "all_clients" pub/sub
+    private Subscription private_subscription;   // same
 
     private AeronMessagingServerDuologue(
-            final EchoServerExecutorService in_exec,
+            final AeronMessagingServerExecutorService in_exec,
             final Instant in_initial_expire,
             final InetAddress in_owner_address,
             final int in_session,
@@ -67,11 +67,11 @@ public final class AeronMessagingServerDuologue implements AutoCloseable {
         this.port_control = in_port_control;
         this.closed = false;
 
-        this.handler = new FragmentAssembler((data, offset, length, header) -> {
+        this.private_message_handler = new FragmentAssembler((data, offset, length, header) -> {
             try {
-                this.onMessageReceived(data, offset, length, header);
-            } catch (final IOException e) {
-                LOG.error("failed to send message: ", e);
+                this.on_private_message_received(data, offset, length, header);
+            } catch (final IOException ex) {
+                LOG.error("FragmentAssembler failed to process incoming (client -> server) message. Exception details:", ex);
                 this.close();
             }
         });
@@ -96,7 +96,7 @@ public final class AeronMessagingServerDuologue implements AutoCloseable {
     public static AeronMessagingServerDuologue create(
             final Aeron aeron,
             final Clock clock,
-            final EchoServerExecutorService exec,
+            final AeronMessagingServerExecutorService exec,
             final InetAddress local_address,
             final InetAddress owner_address,
             final int session,
@@ -120,11 +120,10 @@ public final class AeronMessagingServerDuologue implements AutoCloseable {
                 = clock.instant().plus(10L, ChronoUnit.SECONDS);
 
         final ConcurrentPublication pub
-                = EchoChannels.createPublicationDynamicMDCWithSession(
-                        aeron,
+                = AeronChannelsHelper.createPublicationDynamicMDCWithSession(aeron,
                         local_address,
                         port_control,
-                        AeronMessagingServer.ECHO_STREAM_ID,
+                        AeronMessagingServer.MAIN_STREAM_ID,
                         session);
 
         try {
@@ -138,11 +137,10 @@ public final class AeronMessagingServerDuologue implements AutoCloseable {
                             port_control);
 
             final Subscription sub
-                    = EchoChannels.createSubscriptionWithHandlersAndSession(
-                            aeron,
+                    = AeronChannelsHelper.createSubscriptionWithHandlersAndSession(aeron,
                             local_address,
                             port_data,
-                            AeronMessagingServer.ECHO_STREAM_ID,
+                            AeronMessagingServer.MAIN_STREAM_ID,
                             duologue::onClientConnected,
                             duologue::onClientDisconnected,
                             session);
@@ -161,26 +159,28 @@ public final class AeronMessagingServerDuologue implements AutoCloseable {
 
     /**
      * Poll the duologue for activity.
+     * The handler will pass received message to on_private_message_received()
      */
     public int poll() {
         this.exec.assertIsExecutorThread();
-        return this.subscription.poll(this.handler, 10);
+        return this.private_subscription.poll(this.private_message_handler, 10);
     }
 
     /**
      * Dimon: this method sends a "private" message to the client (the message
-     * will not be seen by other clients).
+     * will not be seen by other clients, it will go through "per client"
+     * publication channel dedicated to only this one particular client).
      *
      * @param msg
      * @throws IOException
      */
-    public void sent_message_to_client(
+    public void send_private_message_to_client(
             String msg)
             throws IOException {
 
-        if (publication.isConnected()) {
-            EchoMessages.sendMessage(
-                    this.publication,
+        if (private_publication.isConnected()) {
+            MessagesHelper.sendMessage(
+                    this.private_publication,
                     this.send_buffer,
                     msg);
         }
@@ -188,7 +188,7 @@ public final class AeronMessagingServerDuologue implements AutoCloseable {
 
     }
 
-    private void onMessageReceived(
+    private void on_private_message_received( // from_client
             final DirectBuffer buffer,
             final int offset,
             final int length,
@@ -199,7 +199,7 @@ public final class AeronMessagingServerDuologue implements AutoCloseable {
         final String session_name
                 = Integer.toString(header.sessionId());
         final String message
-                = EchoMessages.parseMessageUTF8(buffer, offset, length);
+                = MessagesHelper.parseMessageUTF8(buffer, offset, length);
 
         /**
          * Try to parse an ECHO message.
@@ -208,8 +208,8 @@ public final class AeronMessagingServerDuologue implements AutoCloseable {
         final Matcher echo_matcher = PATTERN_ECHO.matcher(message);
         if (echo_matcher.matches()) {
             // Yes, client sent us ECHO request, reply echo back to the client
-            EchoMessages.sendMessage(
-                    this.publication,
+            MessagesHelper.sendMessage(
+                    this.private_publication,
                     this.send_buffer,
                     "ECHO " + echo_matcher.group(1));
             return;
@@ -231,9 +231,9 @@ public final class AeronMessagingServerDuologue implements AutoCloseable {
     private void setPublicationSubscription(
             final Publication in_publication,
             final Subscription in_subscription) {
-        this.publication
+        this.private_publication
                 = Objects.requireNonNull(in_publication, "Publication");
-        this.subscription
+        this.private_subscription
                 = Objects.requireNonNull(in_subscription, "Subscription");
     }
 
@@ -242,9 +242,9 @@ public final class AeronMessagingServerDuologue implements AutoCloseable {
         this.exec.my_call(() -> {
             final int image_session = image.sessionId();
             final String session_name = Integer.toString(image_session);
-            final InetAddress address = EchoAddresses.extractAddress(image.sourceIdentity());
+            final InetAddress address = IPAddressesHelper.extractAddress(image.sourceIdentity());
 
-            if (this.subscription.imageCount() == 0) {
+            if (this.private_subscription.imageCount() == 0) {
                 LOG.debug("[{}] last client ({}) disconnected", session_name, address);
                 this.close();
             } else {
@@ -258,7 +258,7 @@ public final class AeronMessagingServerDuologue implements AutoCloseable {
             final Image image) {
         this.exec.my_call(() -> {
             final InetAddress remote_address
-                    = EchoAddresses.extractAddress(image.sourceIdentity());
+                    = IPAddressesHelper.extractAddress(image.sourceIdentity());
 
             if (Objects.equals(remote_address, this.owner)) {
                 LOG.debug("[{}] client with correct IP connected",
@@ -283,7 +283,7 @@ public final class AeronMessagingServerDuologue implements AutoCloseable {
 
         this.exec.assertIsExecutorThread();
 
-        return this.subscription.imageCount() == 0
+        return this.private_subscription.imageCount() == 0
                 && now.isAfter(this.initial_expire);
     }
 
@@ -303,9 +303,9 @@ public final class AeronMessagingServerDuologue implements AutoCloseable {
         if (!this.closed) {
             try {
                 try {
-                    this.publication.close();
+                    this.private_publication.close();
                 } finally {
-                    this.subscription.close();
+                    this.private_subscription.close();
                 }
             } finally {
                 this.closed = true;

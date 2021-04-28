@@ -9,9 +9,9 @@ import java.net.UnknownHostException;
  * Functions to parse addresses.
  */
 
-public final class EchoAddresses
+public final class IPAddressesHelper
 {
-  private EchoAddresses()
+  private IPAddressesHelper()
   {
 
   }

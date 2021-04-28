@@ -6,7 +6,7 @@ import java.net.InetAddress;
 import java.nio.file.Path;
 
 @Value.Immutable
-public interface EchoServerConfiguration
+public interface AeronMessagingServerConfiguration
 {
   /**
    * @return The base directory that will be used for the server; should be unique for each server instance

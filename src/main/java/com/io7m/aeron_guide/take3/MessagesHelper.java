@@ -15,11 +15,11 @@ import static java.nio.charset.StandardCharsets.UTF_8;
  * Convenience functions to send messages.
  */
 
-public final class EchoMessages
+public final class MessagesHelper
 {
-  private static final Logger LOG = LoggerFactory.getLogger(EchoMessages.class);
+  private static final Logger LOG = LoggerFactory.getLogger(MessagesHelper.class);
 
-  private EchoMessages()
+  private MessagesHelper()
   {
 
   }

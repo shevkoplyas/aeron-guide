@@ -16,9 +16,9 @@ import static java.lang.Boolean.TRUE;
  * Convenience functions to construct publications and subscriptions.
  */
 
-public final class EchoChannels
+public final class AeronChannelsHelper
 {
-  private EchoChannels()
+  private AeronChannelsHelper()
   {
 
   }

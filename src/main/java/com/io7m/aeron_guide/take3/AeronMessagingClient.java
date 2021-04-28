@@ -88,8 +88,8 @@ public final class AeronMessagingClient implements Closeable {
         final MediaDriver.Context media_context
                 = new MediaDriver.Context()
                         .dirDeleteOnStart(true)
-                        .publicationReservedSessionIdLow(EchoSessions.RESERVED_SESSION_ID_LOW)
-                        .publicationReservedSessionIdHigh(EchoSessions.RESERVED_SESSION_ID_HIGH)
+                        .publicationReservedSessionIdLow(AeronMessagingServerSessions.RESERVED_SESSION_ID_LOW)
+                        .publicationReservedSessionIdHigh(AeronMessagingServerSessions.RESERVED_SESSION_ID_HIGH)
                         .aeronDirectoryName(directory);
 
         final Aeron.Context aeron_context
@@ -192,7 +192,7 @@ public final class AeronMessagingClient implements Closeable {
             /**
              * Send a one-time pad to the server.
              */
-            EchoMessages.sendMessage(
+            MessagesHelper.sendMessage(
                     all_client_publication,
                     buffer,
                     "HELLO " + Integer.toUnsignedString(this.duologue_key, 16).toUpperCase());
@@ -251,20 +251,20 @@ public final class AeronMessagingClient implements Closeable {
         while (packets_count++ < 1000) {
 
             // Send ECHO messages to the server and wait for responses. (via private publication)
-            EchoMessages.sendMessage(
+            MessagesHelper.sendMessage(
                     private_publication,
                     buffer,
                     "ECHO " + Long.toUnsignedString(this.random.nextLong(), 16));
 
             // Also send some random message (to check the server won't barf) - also via private publication
-            EchoMessages.sendMessage(
+            MessagesHelper.sendMessage(
                     private_publication,
                     buffer,
                     "client ---private---> server: Hi server! My local client-time is " + clock.instant().toString());
 
             // Just for fun: let's periodically send some other message to the server via all_client_publication!
             if (packets_count % 3 == 0) {
-                EchoMessages.sendMessage(
+                MessagesHelper.sendMessage(
                         all_client_publication,
                         buffer,
                         "client ---all_client_publication---> server: Random number: " + Long.toUnsignedString(this.random.nextLong(), 16) + ". Local client-time is " + clock.instant().toString());
@@ -296,7 +296,7 @@ public final class AeronMessagingClient implements Closeable {
             final int offset,
             final int length) {
         final String response
-                = EchoMessages.parseMessageUTF8(buffer, offset, length);
+                = MessagesHelper.parseMessageUTF8(buffer, offset, length);
 
         LOG.debug("[{}] response: {}", session_name, response);
 
@@ -319,7 +319,7 @@ public final class AeronMessagingClient implements Closeable {
             final int offset,
             final int length) {
         final String response
-                = EchoMessages.parseMessageUTF8(buffer, offset, length);
+                = MessagesHelper.parseMessageUTF8(buffer, offset, length);
 
         LOG.debug("[{}] all_client_subscription_message_handler: {}", session_name, response);
     }
@@ -327,7 +327,7 @@ public final class AeronMessagingClient implements Closeable {
     private Publication setupConnectPublication()
             throws EchoClientTimedOutException {
         final ConcurrentPublication publication
-                = EchoChannels.createPublicationWithSession(
+                = AeronChannelsHelper.createPublicationWithSession(
                         this.aeron,
                         this.configuration.remoteAddress(),
                         this.remote_data_port,
@@ -354,7 +354,7 @@ public final class AeronMessagingClient implements Closeable {
     private Subscription setupConnectSubscription()
             throws EchoClientTimedOutException {
         final Subscription subscription
-                = EchoChannels.createSubscriptionDynamicMDCWithSession(
+                = AeronChannelsHelper.createSubscriptionDynamicMDCWithSession(
                         this.aeron,
                         this.configuration.remoteAddress(),
                         this.remote_control_port,
@@ -456,7 +456,7 @@ public final class AeronMessagingClient implements Closeable {
             return;
         }
 
-        final String response = EchoMessages.parseMessageUTF8(buffer, offset, length);
+        final String response = MessagesHelper.parseMessageUTF8(buffer, offset, length);
 
         LOG.trace("[{}] response: {}", session_name, response);
 
@@ -526,7 +526,7 @@ public final class AeronMessagingClient implements Closeable {
     private Publication setupAllClientsPublication()
             throws EchoClientTimedOutException {
         final ConcurrentPublication publication
-                = EchoChannels.createPublication(
+                = AeronChannelsHelper.createPublication(
                         this.aeron,
                         this.configuration.remoteAddress(),
                         this.configuration.remoteInitialPort(),
@@ -552,7 +552,7 @@ public final class AeronMessagingClient implements Closeable {
     private Subscription setupAllClientsSubscription()
             throws EchoClientTimedOutException {
         final Subscription subscription
-                = EchoChannels.createSubscriptionDynamicMDC(
+                = AeronChannelsHelper.createSubscriptionDynamicMDC(
                         this.aeron,
                         this.configuration.remoteAddress(),
                         this.configuration.remoteInitialControlPort(),

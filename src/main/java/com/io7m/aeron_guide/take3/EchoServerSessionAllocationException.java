@@ -5,7 +5,7 @@ package com.io7m.aeron_guide.take3;
  */
 
 public final class EchoServerSessionAllocationException
-  extends EchoServerException
+  extends AeronMessagingServerException
 {
   /**
    * Create an exception.

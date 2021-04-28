@@ -6,7 +6,7 @@ import java.util.Objects;
  * The type of exceptions raised by the server.
  */
 
-public abstract class EchoServerException extends Exception
+public abstract class AeronMessagingServerException extends Exception
 {
   /**
    * Create an exception.
@@ -14,7 +14,7 @@ public abstract class EchoServerException extends Exception
    * @param message The message
    */
 
-  public EchoServerException(final String message)
+  public AeronMessagingServerException(final String message)
   {
     super(Objects.requireNonNull(message, "message"));
   }
@@ -25,7 +25,7 @@ public abstract class EchoServerException extends Exception
    * @param cause The cause
    */
 
-  public EchoServerException(final Throwable cause)
+  public AeronMessagingServerException(final Throwable cause)
   {
     super(Objects.requireNonNull(cause, "cause"));
   }

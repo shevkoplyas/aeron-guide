@@ -16,6 +16,7 @@ import java.util.HashMap;
 import java.util.Iterator;
 import java.util.Map;
 import java.util.Objects;
+import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import org.agrona.BufferUtil;
@@ -23,6 +24,17 @@ import org.agrona.concurrent.UnsafeBuffer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+/**
+ * The majority of the interesting work that the server does is now performed by
+ * a static inner class called ClientState. This class is responsible for
+ * accepting requests from clients, checking access restrictions (such as
+ * enforcing the limit on duologues by a single IP address), polling existing
+ * duologues for activity, and so on. We establish a rule that access to the
+ * ClientState class is confined to a single thread via the EchoServerExecutor
+ * type. The EchoServer class defines three methods that each essentially
+ * delegate to the ClientState class:
+ * 
+ */
 public final class ClientState {
     
     private static final Logger LOG = LoggerFactory.getLogger(AeronMessagingServer.class);
@@ -35,17 +47,19 @@ public final class ClientState {
     private final EchoServerPortAllocator port_allocator;
     private final Aeron aeron;
     private final Clock clock;
-    private final EchoServerConfiguration configuration;
+    private final AeronMessagingServerConfiguration configuration;
     private final UnsafeBuffer send_buffer;
-    private final EchoServerExecutorService executor;
+    private final AeronMessagingServerExecutorService executor;
     private final EchoServerAddressCounter address_counter;
     private final EchoServerSessionAllocator session_allocator;
+    private final ConcurrentLinkedQueue<String> incoming_messages_from_all_clients_queue;  // reference to the "inbox" queue for "all-clients" channel
     
     ClientState(
             final Aeron in_aeron,
             final Clock in_clock,
-            final EchoServerExecutorService in_executor,
-            final EchoServerConfiguration in_configuration) {
+            final AeronMessagingServerExecutorService in_executor,
+            final AeronMessagingServerConfiguration in_configuration,
+            final ConcurrentLinkedQueue<String> in_incoming_messages_from_all_clients_queue) {  // server passes us a reference to "inbox" queue for "all-clients" channel
         this.aeron
                 = Objects.requireNonNull(in_aeron, "Aeron");
         this.clock
@@ -54,6 +68,8 @@ public final class ClientState {
                 = Objects.requireNonNull(in_executor, "Executor");
         this.configuration
                 = Objects.requireNonNull(in_configuration, "Configuration");
+        this.incoming_messages_from_all_clients_queue
+                = Objects.requireNonNull(in_incoming_messages_from_all_clients_queue, "incoming_messages_from_all_clients_queue");
         
         this.client_duologues = new HashMap<>(32);
         this.client_session_addresses = new HashMap<>(32);
@@ -68,8 +84,8 @@ public final class ClientState {
         
         this.session_allocator
                 = EchoServerSessionAllocator.create(
-                        EchoSessions.RESERVED_SESSION_ID_LOW,
-                        EchoSessions.RESERVED_SESSION_ID_HIGH,
+                        AeronMessagingServerSessions.RESERVED_SESSION_ID_LOW,
+                        AeronMessagingServerSessions.RESERVED_SESSION_ID_HIGH,
                         new SecureRandom());
         
         this.send_buffer
@@ -108,13 +124,13 @@ public final class ClientState {
             final String session_name,
             final Integer session_boxed,
             final String message)
-            throws EchoServerException, IOException {
+            throws AeronMessagingServerException, IOException {
         this.executor.assertIsExecutorThread();
 
         // Dimon: check if this is the 1st client message (by checking if duolog is already assigned by given session_id)
         if (this.client_duologues.keySet().contains(session_boxed)) {
             // Dimon: this client already has duolog, so this isn't initial message
-            onClientMessageProcess(
+            on_all_cilents_message_received(
                     publication,
                     session_name,
                     session_boxed,
@@ -123,7 +139,7 @@ public final class ClientState {
         } else {
             // Dimon: this is client's 1st message - pass it to the onInitialClientMessageProcess()
             // to check some limits and to allocate a new EchoServerDuologue for this client.
-            onInitialClientMessageProcess(
+            on_initial_all_cilents_message_received(
                     publication,
                     session_name,
                     session_boxed,
@@ -131,21 +147,25 @@ public final class ClientState {
         }
     }
     
-    void onClientMessageProcess(
+    void on_all_cilents_message_received(
             final Publication publication,
             final String session_name,
             final Integer session_boxed,
             final String message)
-            throws EchoServerException, IOException {
+            throws AeronMessagingServerException, IOException {
         LOG.debug("debug: +++ client send another message into the 'all clients' channel: " + message);
+
+// The queues will wait till "take4", which will be no longer echo client/server, but more generic message bus (no regexps on each message - too expensive!)
+//        // enqueue into server.incoming_messages_from_all_clients
+//        this.incoming_messages_from_all_clients_queue.add(message);
     }
     
-    void onInitialClientMessageProcess(
+    void on_initial_all_cilents_message_received(
             final Publication publication,
             final String session_name,
             final Integer session_boxed,
             final String message)
-            throws EchoServerException, IOException {
+            throws AeronMessagingServerException, IOException {
         this.executor.assertIsExecutorThread();
         
         LOG.debug("[session: {}] received: {}", session_name, message);
@@ -156,7 +176,7 @@ public final class ClientState {
          */
         final Matcher hello_matcher = PATTERN_HELLO.matcher(message);
         if (!hello_matcher.matches()) {
-            EchoMessages.sendMessage(
+            MessagesHelper.sendMessage(
                     publication,
                     this.send_buffer,
                     errorMessage(session_name, "bad message"));
@@ -168,7 +188,7 @@ public final class ClientState {
          */
         if (this.client_duologues.size() >= this.configuration.clientMaximumCount()) {
             LOG.debug("server is full");
-            EchoMessages.sendMessage(
+            MessagesHelper.sendMessage(
                     publication,
                     this.send_buffer,
                     errorMessage(session_name, "server full"));
@@ -185,7 +205,7 @@ public final class ClientState {
         if (this.address_counter.countFor(owner)
                 >= this.configuration.maximumConnectionsPerAddress()) {
             LOG.debug("too many connections for IP address");
-            EchoMessages.sendMessage(
+            MessagesHelper.sendMessage(
                     publication,
                     this.send_buffer,
                     errorMessage(session_name, "too many connections for IP address"));
@@ -210,7 +230,7 @@ public final class ClientState {
                 = Integer.toUnsignedString(duologue_key ^ duologue.session(), 16)
                         .toUpperCase();
         
-        EchoMessages.sendMessage(
+        MessagesHelper.sendMessage(
                 publication,
                 this.send_buffer,
                 connectMessage(
@@ -299,7 +319,7 @@ public final class ClientState {
             final Map.Entry<Integer, AeronMessagingServerDuologue> entry = iter.next();
             final AeronMessagingServerDuologue duologue = entry.getValue();
             try {
-                duologue.sent_message_to_client(msg);
+                duologue.send_private_message_to_client(msg);
                 System.err.println("+++ debug: server sending private msg to client");
             } catch (Exception ex) {
                 System.err.println("Exception while trying to send_message_to_client: " + ex);

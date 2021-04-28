@@ -4,7 +4,7 @@ package com.io7m.aeron_guide.take3;
  * A port could not be allocated.
  */
 
-public final class EchoServerPortAllocationException extends EchoServerException
+public final class EchoServerPortAllocationException extends AeronMessagingServerException
 {
   /**
    * Create an exception.

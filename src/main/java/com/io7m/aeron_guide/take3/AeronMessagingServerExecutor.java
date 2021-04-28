@@ -11,17 +11,17 @@ import java.util.concurrent.Future;
 import java.util.concurrent.ThreadFactory;
 
 /**
- * The default implementation of the {@link EchoServerExecutorService}
+ * The default implementation of the {@link AeronMessagingServerExecutorService}
  * interface.
  */
-public final class EchoServerExecutor implements EchoServerExecutorService {
+public final class AeronMessagingServerExecutor implements AeronMessagingServerExecutorService {
 
     private static final Logger LOG
-            = LoggerFactory.getLogger(EchoServerExecutor.class);
+            = LoggerFactory.getLogger(AeronMessagingServerExecutor.class);
 
     private final ExecutorService executor;
 
-    private EchoServerExecutor(
+    private AeronMessagingServerExecutor(
             final ExecutorService in_exec) {
         this.executor = Objects.requireNonNull(in_exec, "exec");
     }
@@ -66,7 +66,7 @@ public final class EchoServerExecutor implements EchoServerExecutorService {
     /**
      * @return A new executor
      */
-    public static EchoServerExecutor create() {
+    public static AeronMessagingServerExecutor create() {
         final ThreadFactory factory = r -> {
             final EchoServerThread t = new EchoServerThread(r);
             t.setName(new StringBuilder(64)
@@ -77,6 +77,6 @@ public final class EchoServerExecutor implements EchoServerExecutorService {
             return t;
         };
 
-        return new EchoServerExecutor(Executors.newSingleThreadExecutor(factory));
+        return new AeronMessagingServerExecutor(Executors.newSingleThreadExecutor(factory));
     }
 }

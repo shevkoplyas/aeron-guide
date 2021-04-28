@@ -4,7 +4,7 @@ package com.io7m.aeron_guide.take3;
  * An exception occurred whilst trying to create the server.
  */
 
-public final class EchoServerCreationException extends EchoServerException
+public final class AeronMessagingServerCreationException extends AeronMessagingServerException
 {
   /**
    * Create an exception.
@@ -12,7 +12,7 @@ public final class EchoServerCreationException extends EchoServerException
    * @param cause The cause
    */
 
-  public EchoServerCreationException(final Exception cause)
+  public AeronMessagingServerCreationException(final Exception cause)
   {
     super(cause);
   }

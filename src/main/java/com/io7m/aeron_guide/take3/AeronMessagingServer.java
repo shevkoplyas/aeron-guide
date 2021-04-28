@@ -26,41 +26,68 @@ import java.util.HashMap;
 import java.util.Iterator;
 import java.util.Map;
 import java.util.Objects;
+import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.Future;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
- * A mindlessly simple Echo server. Found here:
- * http://www.io7m.com/documents/aeron-guide/#client_server_take_2
+ * <pre>
+ * A mindlessly simple Echo server by Mark Raynsford was found here:
+ * http://www.io7m.com/documents/aeron-guide/
+ * https://github.com/io7m/aeron-guide.git
+ *
+ * Mark's work is licensed under a Creative Commons Attribution 4.0 International License. (see README-LICENSE.txt)
+ *
+ * The guide shows how to make simple echo client-server in 2 takes
+ * take1 - is minimalistic code and then take2 is a bit more involved.
+ * This "AeronMessagingServer" is kinda "take3" - a small modification
+ * done to the main loop to make it able to shovel thousands of messages
+ * per second. It also does not close initial "all client" connection,
+ * so we end up with every client connected to the server with 4 channels:
+ *   1) one-for-all publication (any published message will go to all connected clients)
+ *   2) one-for-all subscription (any client can write a message to the server via that channel)
+ *   3) "private" publication (server can send a message just to one particular client)
+ *   4) "private" subscription (any client can use to send a message to the server, but there's  no difference between (4) and (2) so it is kinda redundant)
+ *
+ * Also some steps were done to improve AeronMessagingServer integration into
+ * other projects. In particular AeronMessagingServer is:
+ *   - working on it's own thread
+ *   - is accepting messages by exposed send_broadcast(String message) method, which will simply enqueue(message)
+ *     Later let's add send_private(message) method inside
+ *   - is adding all received messages into concurrent containers ConcurrentLinkedQueue.
+ *     See details on Queue: https://docs.oracle.com/en/java/javase/16/docs/api/java.base/java/util/Queue.html
+ *     In particular ConcurrentLinkedQueue: https://docs.oracle.com/en/java/javase/16/docs/api/java.base/java/util/concurrent/ConcurrentLinkedQueue.html
+ * </pre>
  */
 public final class AeronMessagingServer implements Closeable {
 
-    /**
-     * The stream used for echo messages.
-     */
-    public static final int ECHO_STREAM_ID;
+    // We end up using just one stream ID.
+    // Aeron is capable of multiplexing several independent streams of messages into a single connection,
+    // but let's use it just as a bus and we'll discrementate different types of messages by their payload
+    // (for examle we might inject message type as 1st N bytes into the byte buffer transfered to the other end).
+    public static final int MAIN_STREAM_ID;
 
     private static final Logger LOG = LoggerFactory.getLogger(AeronMessagingServer.class);
 
     static {
         // We also specify a stream ID when creating the subscription. Aeron is capable of
         // multiplexing several independent streams of messages into a single connection.
-        ECHO_STREAM_ID = 0x100500ff;
+        MAIN_STREAM_ID = 0x100500ff;
     }
 
     private final MediaDriver media_driver;
     private final Aeron aeron;
-    private final EchoServerExecutorService executor; // Dimon: this type is an i-face, which extends AutoCloseable, Executor
+    private final AeronMessagingServerExecutorService executor; // Dimon: this type is an i-face, which extends AutoCloseable, Executor
     private final ClientState clients;
-    private final EchoServerConfiguration configuration;
+    private final AeronMessagingServerConfiguration configuration;
 
     private AeronMessagingServer(
             final Clock in_clock,
-            final EchoServerExecutorService in_exec,
+            final AeronMessagingServerExecutorService in_exec,
             final MediaDriver in_media_driver,
             final Aeron in_aeron,
-            final EchoServerConfiguration in_config) {
+            final AeronMessagingServerConfiguration in_config) {
         this.executor
                 = Objects.requireNonNull(in_exec, "executor");
         this.media_driver
@@ -75,7 +102,8 @@ public final class AeronMessagingServer implements Closeable {
                         this.aeron,
                         Objects.requireNonNull(in_clock, "clock"),
                         this.executor,
-                        this.configuration);
+                        this.configuration,
+                        this.incoming_messages_from_all_clients_queue);
     }
 
     /**
@@ -86,12 +114,12 @@ public final class AeronMessagingServer implements Closeable {
      *
      * @return A new server
      *
-     * @throws EchoServerException On any initialization error
+     * @throws AeronMessagingServerException On any initialization error
      */
     public static AeronMessagingServer create(
             final Clock clock,
-            final EchoServerConfiguration configuration)
-            throws EchoServerException {
+            final AeronMessagingServerConfiguration configuration)
+            throws AeronMessagingServerException {
         Objects.requireNonNull(clock, "clock");
         Objects.requireNonNull(configuration, "configuration");
 
@@ -101,17 +129,17 @@ public final class AeronMessagingServer implements Closeable {
         final MediaDriver.Context media_context
                 = new MediaDriver.Context()
                         .dirDeleteOnStart(true)
-                        .publicationReservedSessionIdLow(EchoSessions.RESERVED_SESSION_ID_LOW) // When the media driver automatically assigns session IDs, it must
-                        .publicationReservedSessionIdHigh(EchoSessions.RESERVED_SESSION_ID_HIGH) // use values outside of this range to avoid conflict with any that we assign ourselves.
+                        .publicationReservedSessionIdLow(AeronMessagingServerSessions.RESERVED_SESSION_ID_LOW) // When the media driver automatically assigns session IDs, it must
+                        .publicationReservedSessionIdHigh(AeronMessagingServerSessions.RESERVED_SESSION_ID_HIGH) // use values outside of this range to avoid conflict with any that we assign ourselves.
                         .aeronDirectoryName(directory);
 
         final Aeron.Context aeron_context
                 = new Aeron.Context()
                         .aeronDirectoryName(directory);
 
-        EchoServerExecutorService executor = null;
+        AeronMessagingServerExecutorService executor = null;
         try {
-            executor = EchoServerExecutor.create();
+            executor = AeronMessagingServerExecutor.create();
 
             MediaDriver media_driver = null;
             try {
@@ -136,7 +164,7 @@ public final class AeronMessagingServer implements Closeable {
             } catch (final Exception c_ex) {
                 e.addSuppressed(c_ex);
             }
-            throw new EchoServerCreationException(e);
+            throw new AeronMessagingServerCreationException(e);
         }
     }
 
@@ -171,8 +199,8 @@ public final class AeronMessagingServer implements Closeable {
         final int local_clients_base_port = Integer.parseUnsignedInt(args[4]);
         final int client_count = Integer.parseUnsignedInt(args[5]);
 
-        final EchoServerConfiguration config
-                = ImmutableEchoServerConfiguration.builder()
+        final AeronMessagingServerConfiguration config
+                = ImmutableAeronMessagingServerConfiguration.builder()
                         .baseDirectory(directory)
                         .localAddress(local_address)
                         .localInitialPort(local_initial_data_port)
@@ -198,7 +226,7 @@ public final class AeronMessagingServer implements Closeable {
                 final FragmentHandler handler
                         = new FragmentAssembler(
                                 (buffer, offset, length, header)
-                                -> this.onAllClientsClientMessage(
+                                -> this.on_all_clients_message_received(
                                         all_clients_publication,
                                         buffer,
                                         offset,
@@ -214,7 +242,6 @@ public final class AeronMessagingServer implements Closeable {
                 while (true) {
                     long epoch_ms = clock.millis();
 
-//                    Future<Integer> future_polled_fragments_count = this.executor.execute(() -> {
                     Future<Integer> future_polled_fragments_count = this.executor.my_call(() -> {
                         // Dimon: this will subscirption.pull() on "allClientSubscription",
                         //        which triggers: this::onInitialClientConnected and this::onInitialClientDisconnected);
@@ -228,7 +255,7 @@ public final class AeronMessagingServer implements Closeable {
                         // from all individual connected clients channels, reacting on them (not sending anything proactively)
 
                         // Let's proactively send some message to all connected clients.
-                        // [Q] How do we use different channels ECHO_STREAM_ID ?
+                        // [Q] How do we use different channels MAIN_STREAM_ID ?
                         // Every 5 sec send private message to all clients
                         if (epoch_ms % 5000 == 0) {
                             this.clients.sent_private_message_to_all_clients("server ----private---> client: local server time is " + clock.instant().toString());
@@ -238,7 +265,7 @@ public final class AeronMessagingServer implements Closeable {
                         if (epoch_ms % 7000 == 0) {
                             try {
                                 if (all_clients_publication.isConnected()) {
-                                    EchoMessages.sendMessage(
+                                    MessagesHelper.sendMessage(
                                             all_clients_publication,
                                             tmp_send_buffer,
                                             "server ----all_clients_publication---> clients: some message to all connected clients!");
@@ -264,7 +291,7 @@ public final class AeronMessagingServer implements Closeable {
 //                            Thread.currentThread().interrupt();
 //                        }
 //                    }
-                    // Instead of "while(future.isDone()" we can simply "future.get()", which is blocking (untill lambda comletes
+                    // Instead of waiting "while(future.isDone()" we can simply "future.get()", which is blocking (untill lambda comletes
                     Integer polled_fragments_count = 0;
                     try {
                         polled_fragments_count = future_polled_fragments_count.get();  // throws InterruptedException, ExecutionException
@@ -274,8 +301,24 @@ public final class AeronMessagingServer implements Closeable {
                         LOG.error("Main loop: unexpected exception while waiting for future_polled_fragments_count. Details: " + ex);
                     }
 
-                    // Previous polling complete. Check if we got any fragments (then repeat polling w/o extra delay).
-                    if (polled_fragments_count == 0) {
+                    // Now try to shovel our "OUTBOX" queue: broadcast_messages_to_all_clients_queue
+                    Integer sent_broadcast_messages_count = 0;
+                    if (!broadcast_messages_to_all_clients_queue.isEmpty()) {
+                        try {
+                            if (all_clients_publication.isConnected()) {
+                                MessagesHelper.sendMessage(
+                                        all_clients_publication,
+                                        tmp_send_buffer,
+                                        broadcast_messages_to_all_clients_queue.poll());  // Queue.poll() - Retrieves and removes the head of this queue, or returns null if this queue is empty.
+                            }
+                        } catch (IOException ex) {
+                            LOG.error("Exception while trying to sendMessage() via all_clients_publication. Details: ", ex);
+                        }
+                    }
+
+                    // Previous polling and sending complete. Check if we got any fragments received or messaes sent,
+                    // then run next itaration w/o extra delay.
+                    if ((polled_fragments_count + sent_broadcast_messages_count) == 0) {
                         // We got no fragments from subscription. Let's fall asleep for 1ms
                         try {
                             Thread.sleep(1L);
@@ -283,21 +326,41 @@ public final class AeronMessagingServer implements Closeable {
                             Thread.currentThread().interrupt();
                         }
                     }
-                    // else: do nothing, just continue to the next "main loop" iteration
+                    // else: do nothing, just continue to the next "main loop" iteration.
 
                 }
             }
         }
     }
 
-    private void onAllClientsClientMessage(
-            final Publication publication, // Dimon: we simply pass "publication" to know where to reply (if needed).. The "official params" are the next 4 (buffer, offset, length, header)
+    /**
+     * See details on Queue:
+     * https://docs.oracle.com/en/java/javase/16/docs/api/java.base/java/util/Queue.html
+     * In particular ConcurrentLinkedQueue:
+     * https://docs.oracle.com/en/java/javase/16/docs/api/java.base/java/util/concurrent/ConcurrentLinkedQueue.html
+     *
+     */
+    private ConcurrentLinkedQueue<String> broadcast_messages_to_all_clients_queue = new ConcurrentLinkedQueue();
+    private ConcurrentLinkedQueue<String> incoming_messages_from_all_clients_queue = new ConcurrentLinkedQueue();
+
+    /**
+     * Inserts the specified element at the tail of
+     * broadcast_messages_to_all_clients_queue (fifo) queue.
+     *
+     * @param message
+     */
+    public void send_broadcast_message_to_all_clients(String message) {
+        broadcast_messages_to_all_clients_queue.add(message);
+    }
+
+    private void on_all_clients_message_received(
+            final Publication all_clients_publication, // Dimon: we simply pass "publication" to know where to reply (if needed).. The "official params" are the next 4 (buffer, offset, length, header)
             final DirectBuffer buffer,
             final int offset,
             final int length,
             final Header header) {
         final String message
-                = EchoMessages.parseMessageUTF8(buffer, offset, length);
+                = MessagesHelper.parseMessageUTF8(buffer, offset, length);
 
         final String session_name
                 = Integer.toString(header.sessionId());
@@ -308,7 +371,7 @@ public final class AeronMessagingServer implements Closeable {
 //        this.executor.execute(() -> {
         try {
             this.clients.onClientMessage(
-                    publication, // Dimon: we simply pass "publication" to know where to reply (if needed) and message is now a simple String.
+                    all_clients_publication, // Dimon: we simply pass "publication" to know where to reply (if needed) and message is now a simple String.
                     session_name,
                     session_boxed,
                     message);
@@ -322,22 +385,20 @@ public final class AeronMessagingServer implements Closeable {
      * Configure the publication for the "all-clients" channel.
      */
     private Publication setupAllClientsPublication() {
-        return EchoChannels.createPublicationDynamicMDC(
-                this.aeron,
+        return AeronChannelsHelper.createPublicationDynamicMDC(this.aeron,
                 this.configuration.localAddress(),
                 this.configuration.localInitialControlPort(),
-                ECHO_STREAM_ID);
+                MAIN_STREAM_ID);
     }
 
     /**
      * Configure the subscription for the "all-clients" channel.
      */
     private Subscription setupAllClientsSubscription() {
-        return EchoChannels.createSubscriptionWithHandlers(
-                this.aeron,
+        return AeronChannelsHelper.createSubscriptionWithHandlers(this.aeron,
                 this.configuration.localAddress(),
                 this.configuration.localInitialPort(),
-                ECHO_STREAM_ID,
+                MAIN_STREAM_ID,
                 this::onInitialClientConnected,
                 this::onInitialClientDisconnected);
     }
@@ -352,7 +413,7 @@ public final class AeronMessagingServer implements Closeable {
 
             this.clients.onInitialClientConnected(
                     image.sessionId(),
-                    EchoAddresses.extractAddress(image.sourceIdentity()));
+                    IPAddressesHelper.extractAddress(image.sourceIdentity()));
             return 0; // this value does not really matter, we'll use Callable<Integer> to return number of received fragments and decide if we need to sleep or not in the main loop.
         });
     }
