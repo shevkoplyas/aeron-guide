@@ -38,7 +38,7 @@ public final class MessagesHelper
    * @throws IOException If the message cannot be sent
    */
 
-  public static long sendMessage(
+  public static long send_message(
     final Publication pub,
     final UnsafeBuffer buffer,
     final String text)

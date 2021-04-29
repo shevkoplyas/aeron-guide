@@ -21,12 +21,13 @@ import java.nio.file.Paths;
 import java.security.SecureRandom;
 import java.time.Clock;
 import java.util.Objects;
+import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
- * A mindlessly simple Echo client.
- * Found here: http://www.io7m.com/documents/aeron-guide/#client_server_take_2
+ * A mindlessly simple Echo client. Found here:
+ * http://www.io7m.com/documents/aeron-guide/#client_server_take_2
  */
 public final class AeronMessagingClient implements Closeable {
 
@@ -38,8 +39,6 @@ public final class AeronMessagingClient implements Closeable {
             = Pattern.compile("^ERROR (.*)$");
     private static final Pattern PATTERN_CONNECT
             = Pattern.compile("^CONNECT ([0-9]+) ([0-9]+) ([0-9A-F]+)$");
-    private static final Pattern PATTERN_ECHO
-            = Pattern.compile("^ECHO (.*)$");
 
     private final MediaDriver media_driver;
     private final Aeron aeron;
@@ -51,6 +50,17 @@ public final class AeronMessagingClient implements Closeable {
     private volatile boolean failed;
     private volatile int remote_session;
     private volatile int duologue_key;
+
+    // We have 4 queues: 2 outgoing queues (private and broadcast) and 2 corresponding incoming queues.
+    // See details on Queue:
+    // https://docs.oracle.com/en/java/javase/16/docs/api/java.base/java/util/Queue.html
+    // In particular ConcurrentLinkedQueue:
+    // https://docs.oracle.com/en/java/javase/16/docs/api/java.base/java/util/concurrent/ConcurrentLinkedQueue.html
+    //
+    private final ConcurrentLinkedQueue<String> outgoing_messages_to_all_clients_queue = new ConcurrentLinkedQueue();
+    private final ConcurrentLinkedQueue<String> outgoing_messages_to_private_queue = new ConcurrentLinkedQueue();
+    private final ConcurrentLinkedQueue<String> incoming_messages_from_all_clients_queue = new ConcurrentLinkedQueue();
+    private final ConcurrentLinkedQueue<String> incoming_messages_from_private_queue = new ConcurrentLinkedQueue();
 
     private AeronMessagingClient(
             final MediaDriver in_media_driver,
@@ -64,6 +74,45 @@ public final class AeronMessagingClient implements Closeable {
                 = Objects.requireNonNull(in_configuration, "configuration");
 
         this.random = new SecureRandom();
+    }
+
+    //////////////////////////////// public methods to send a message to the server (enqueue messages to be sent to the server) //////////////////////
+    // simply synonym / alias  for "send_private(message)"
+    public void send_message(String message) {
+        send_private_message(message);
+    }
+
+    public void send_private_message(String message) {
+        this.outgoing_messages_to_private_queue.add(message);
+    }
+
+    // "control" aka "broadcast" or "all-clients" channel
+    public void send_all_clients_control_channel_message(String message) {
+        this.outgoing_messages_to_all_clients_queue.add(message);
+    }
+
+    //////////////////////////////// public methods to get a message to the server (dequeue already received messages) //////////////////////
+    /**
+     * Simply synonym / alias for "get_private_message()"
+     *
+     * @return message from corresponding queue or null if no messages in queue
+     */
+    public String get_message() {
+        return get_private_message();
+    }
+
+    public String get_private_message() {
+        if (!incoming_messages_from_private_queue.isEmpty()) {
+            return incoming_messages_from_private_queue.poll();
+        }
+        return null;
+    }
+
+    public String get_all_clients_control_channel_message() {
+        if (!incoming_messages_from_all_clients_queue.isEmpty()) {
+            return incoming_messages_from_all_clients_queue.poll();
+        }
+        return null;
     }
 
     /**
@@ -192,7 +241,7 @@ public final class AeronMessagingClient implements Closeable {
             /**
              * Send a one-time pad to the server.
              */
-            MessagesHelper.sendMessage(
+            MessagesHelper.send_message(
                     all_client_publication,
                     buffer,
                     "HELLO " + Integer.toUnsignedString(this.duologue_key, 16).toUpperCase());
@@ -235,82 +284,104 @@ public final class AeronMessagingClient implements Closeable {
         final FragmentHandler private_subscription_message_handler
                 = new FragmentAssembler(
                         (data, offset, length, header)
-                        -> onEchoResponse(session_name, data, offset, length));
+                        -> on_private_message_received(session_name, data, offset, length));
 
         final FragmentHandler all_client_subscription_message_handler
                 = new FragmentAssembler(
                         (data, offset, length, header)
-                        -> onEchoResponse(session_name, data, offset, length));
+                        -> on_all_clients_message_received(session_name, data, offset, length));
 
+        // 
+        // Main loop (client side):
+        //   - polling messages from subscriptions (both "all-client" subscription and own private "per agent" subscription)
+        //   - sending outbound messages by shovelling broadcast_messages_to_all_clients_queue
+        //   - every 10 sec send PUBLISH message via all_clients_publication with server stats
+        //
         Clock clock = Clock.systemUTC();
+        long total_messages_sent_count = 0;
+        long total_messages_sent_size = 0;
+        long polled_fragmetns_total_count = 0;
+        while (true) {
 
-        /**
-         * main loop
-         */
-        int packets_count = 0;
-        while (packets_count++ < 1000) {
+//            // Send a message via private publication
+//            MessagesHelper.sendMessage(
+//                    private_publication,
+//                    buffer,
+//                    "client ---private---> server: Hi server! My local client-time is " + clock.instant().toString());
+//
+//            // Wend a message via all_client_publication!
+//            if (packets_count % 3 == 0) {
+//                MessagesHelper.sendMessage(
+//                        all_client_publication,
+//                        buffer,
+//                        "client ---all_client_publication---> server: Random number: " + Long.toUnsignedString(this.random.nextLong(), 16) + ". Local client-time is " + clock.instant().toString());
+//            }
+            // Try to receive (poll) messages from all subscriptions
+            // We have 1 private subscription (server sends messages to only this client)
+            int fragments_received = private_subscription.poll(private_subscription_message_handler, 1000);
 
-            // Send ECHO messages to the server and wait for responses. (via private publication)
-            MessagesHelper.sendMessage(
-                    private_publication,
-                    buffer,
-                    "ECHO " + Long.toUnsignedString(this.random.nextLong(), 16));
+            // We have "all client" subscription, which sends the same things to all connected clients.
+            fragments_received += all_client_subscription.poll(all_client_subscription_message_handler, 1000);
 
-            // Also send some random message (to check the server won't barf) - also via private publication
-            MessagesHelper.sendMessage(
-                    private_publication,
-                    buffer,
-                    "client ---private---> server: Hi server! My local client-time is " + clock.instant().toString());
-
-            // Just for fun: let's periodically send some other message to the server via all_client_publication!
-            if (packets_count % 3 == 0) {
-                MessagesHelper.sendMessage(
+            // Check 2 outbound queues:  1-of-2) outgoing_messages_to_all_clients_queue
+            int current_iteration_messages_sent_count = 0;
+            if (!outgoing_messages_to_all_clients_queue.isEmpty()) {
+                String outgoing_message = outgoing_messages_to_all_clients_queue.poll();   // Queue.poll() - Retrieves and removes the head of this queue, or returns null if this queue is empty.
+                MessagesHelper.send_message(
                         all_client_publication,
                         buffer,
-                        "client ---all_client_publication---> server: Random number: " + Long.toUnsignedString(this.random.nextLong(), 16) + ". Local client-time is " + clock.instant().toString());
+                        outgoing_message);
+                total_messages_sent_count++;
+                total_messages_sent_size += outgoing_message.length();
+                current_iteration_messages_sent_count++;
             }
 
-            // Time to try to receive (poll) messages from all subscriptions
-            for (int index = 0; index < 100; ++index) {
-                // We have 1 private subscription (server sends messages to only this client)
-                int fragments_received = private_subscription.poll(private_subscription_message_handler, 1000);
-                
-                // We have "all client" subscription, which sends the same things to all connected clients.
-                fragments_received += all_client_subscription.poll(all_client_subscription_message_handler, 1000);
+            // Check 2 outbound queues:  2-of-2) outgoing_messages_to_private_queue
+            if (!outgoing_messages_to_private_queue.isEmpty()) {
+                String outgoing_message = outgoing_messages_to_private_queue.poll();   // Queue.poll() - Retrieves and removes the head of this queue, or returns null if this queue is empty.
+                MessagesHelper.send_message(
+                        all_client_publication,
+                        buffer,
+                        outgoing_message);
+                total_messages_sent_count++;
+                total_messages_sent_size += outgoing_message.length();
+                current_iteration_messages_sent_count++;
+            }
 
-                // Sleep only if no fragments received
-                if (fragments_received == 0){
-                    try {
-                        Thread.sleep(10L);
-                    } catch (final InterruptedException e) {
-                        Thread.currentThread().interrupt();
-                    }
+            // Sleep 1ms only if no fragments received and there was nothing to send
+            if ((fragments_received + current_iteration_messages_sent_count) == 0) {
+                try {
+                    Thread.sleep(1L);
+                } catch (final InterruptedException e) {
+                    Thread.currentThread().interrupt();
                 }
             }
+
         }
     }
 
-    private static void onEchoResponse(
+    private void on_all_clients_message_received(
             final String session_name,
             final DirectBuffer buffer,
             final int offset,
             final int length) {
-        final String response
+        final String message
                 = MessagesHelper.parseMessageUTF8(buffer, offset, length);
+        this.incoming_messages_from_all_clients_queue.add(message);
+//        LOG.debug("[{}] on_all_clients_message_received: {}", session_name, message);
 
-        LOG.debug("[{}] response: {}", session_name, response);
+    }
 
-        final Matcher echo_matcher = PATTERN_ECHO.matcher(response);
-        if (echo_matcher.matches()) {
-            final String message = echo_matcher.group(1);
-            LOG.debug("[{}] ECHO {}", session_name, message);
-            return;
-        }
+    private void on_private_message_received(
+            final String session_name,
+            final DirectBuffer buffer,
+            final int offset,
+            final int length) {
+        final String message
+                = MessagesHelper.parseMessageUTF8(buffer, offset, length);
+        this.incoming_messages_from_private_queue.add(message);
+//        LOG.debug("[{}] on_private_message_received: {}", session_name, message);
 
-//        LOG.error(
-//                "[{}] server returned unrecognized message: {}",
-//                session_name,
-//                response);
     }
 
     private static void all_client_subscription_message_handler(
@@ -437,8 +508,7 @@ public final class AeronMessagingClient implements Closeable {
             final int offset,
             final int length) {
 
-        LOG.trace("debug: got response with length: " + length + ", offset: " + offset);
-
+//        LOG.trace("debug: got response with length: " + length + ", offset: " + offset);
         // The initial "CONNECT" response can't be shorter than 21 byte and can't be longer than ~60 bytes
         if (length < 21 || length > 60) {
             return;
@@ -481,10 +551,8 @@ public final class AeronMessagingClient implements Closeable {
             return;
         }
 
-        /**
-         * The message was intended for this client. Try to parse it as one of
-         * the available message types.
-         */
+        // The message was intended for this client. Try to parse it as one of
+        // the available message types.
         final String text = response.substring(space).trim();   // Trim leading session and space, so now response text should start with CONNECT
 
         final Matcher error_matcher = PATTERN_ERROR.matcher(text);

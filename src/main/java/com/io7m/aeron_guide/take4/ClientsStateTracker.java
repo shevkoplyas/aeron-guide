@@ -33,17 +33,17 @@ import org.slf4j.LoggerFactory;
  * ClientState class is confined to a single thread via the EchoServerExecutor
  * type. The EchoServer class defines three methods that each essentially
  * delegate to the ClientState class:
- * 
+ *
  */
-public final class ClientState {
+public final class ClientsStateTracker {
     
     private static final Logger LOG = LoggerFactory.getLogger(AeronMessagingServer.class);
     
     private static final Pattern PATTERN_HELLO
             = Pattern.compile("^HELLO ([0-9A-F]+)$");
     
-    private final Map<Integer, InetAddress> client_session_addresses;  // Dimon: map stores session_id and remote address upon "onInitialClientConnected"
-    private final Map<Integer, AeronMessagingServerDuologue> client_duologues;   // Dimon: map stores session_id and allocated EchoServerDuologue (with dedicated publication/subscription)
+    private final Map<Integer, InetAddress> client_session_addresses;  // map stores session_id and remote address upon "onInitialClientConnected"
+    private final Map<Integer, AeronMessagingServerDuologue> client_duologues;   // map stores session_id and allocated EchoServerDuologue (with dedicated publication/subscription)
     private final EchoServerPortAllocator port_allocator;
     private final Aeron aeron;
     private final Clock clock;
@@ -52,9 +52,11 @@ public final class ClientState {
     private final AeronMessagingServerExecutorService executor;
     private final EchoServerAddressCounter address_counter;
     private final EchoServerSessionAllocator session_allocator;
-    private final ConcurrentLinkedQueue<String> incoming_messages_from_all_clients_queue;  // reference to the "inbox" queue for "all-clients" channel
+
+    // The reference to the "inbox" queue for "all-clients" channel will be passed to us from the AeronMessagingServer class, where it is instantiated.
+    private final ConcurrentLinkedQueue<String> incoming_messages_from_all_clients_queue;
     
-    ClientState(
+    ClientsStateTracker(
             final Aeron in_aeron,
             final Clock in_clock,
             final AeronMessagingServerExecutorService in_executor,
@@ -175,7 +177,7 @@ public final class ClientState {
          */
         final Matcher hello_matcher = PATTERN_HELLO.matcher(message);
         if (!hello_matcher.matches()) {
-            MessagesHelper.sendMessage(
+            MessagesHelper.send_message(
                     publication,
                     this.send_buffer,
                     errorMessage(session_name, "bad message"));
@@ -187,7 +189,7 @@ public final class ClientState {
          */
         if (this.client_duologues.size() >= this.configuration.clientMaximumCount()) {
             LOG.debug("server is full");
-            MessagesHelper.sendMessage(
+            MessagesHelper.send_message(
                     publication,
                     this.send_buffer,
                     errorMessage(session_name, "server full"));
@@ -204,7 +206,7 @@ public final class ClientState {
         if (this.address_counter.countFor(owner)
                 >= this.configuration.maximumConnectionsPerAddress()) {
             LOG.debug("too many connections for IP address");
-            MessagesHelper.sendMessage(
+            MessagesHelper.send_message(
                     publication,
                     this.send_buffer,
                     errorMessage(session_name, "too many connections for IP address"));
@@ -229,7 +231,7 @@ public final class ClientState {
                 = Integer.toUnsignedString(duologue_key ^ duologue.session(), 16)
                         .toUpperCase();
         
-        MessagesHelper.sendMessage(
+        MessagesHelper.send_message(
                 publication,
                 this.send_buffer,
                 connectMessage(
@@ -282,6 +284,10 @@ public final class ClientState {
         return duologue;
     }
     
+    public int get_number_of_connected_clients() {
+        return this.client_session_addresses.size();
+    }
+    
     void onInitialClientDisconnected(
             final int session_id) {
         this.executor.assertIsExecutorThread();
@@ -301,9 +307,9 @@ public final class ClientState {
     }
 
     /**
-     * Dimon: this is kinda useless f-n, which iterates all connected clients
-     * and send them a "private" message (not seen by other clients). Instead of
-     * this waste of CPU cycles we'll reuse server's "all_clients_publication"
+     * This is kinda useless f-n, which iterates all connected clients and send
+     * them a "private" message (not seen by other clients). Instead of this
+     * waste of CPU cycles we'll reuse server's "all_clients_publication"
      * channel. It uses MDC (multi-destination-cast) to satisfy clients behind
      * NAT, and by it's nature it will broadcast 1 outgoing message to all the
      * connected clients for us!
@@ -311,6 +317,7 @@ public final class ClientState {
      * @param msg
      */
     public void sent_private_message_to_all_clients(String msg) {
+        // this.client_duologues is a hashmap with key = session_id
         final Iterator<Map.Entry<Integer, AeronMessagingServerDuologue>> iter
                 = this.client_duologues.entrySet().iterator();
         
@@ -319,13 +326,86 @@ public final class ClientState {
             final AeronMessagingServerDuologue duologue = entry.getValue();
             try {
                 duologue.send_private_message_to_client(msg);
-                System.err.println("+++ debug: server sending private msg to client");
             } catch (Exception ex) {
-                System.err.println("Exception while trying to send_message_to_client: " + ex);
+                System.err.println("Exception while trying to sent_private_message_to_all_clients: " + ex);
             }
         }
     }
     
+    public boolean enqueue_private_message_to_client_by_session_id(String msg, Integer session_id) {
+
+        // Try to get client's duologue by given session_id
+        AeronMessagingServerDuologue duologue
+                = this.client_duologues.get(session_id);
+
+        // Check we found the duologue instance
+        if (duologue == null) {
+            return false;
+        }
+        
+        try {
+            return duologue.enqueue_private_message_to_client(msg);
+            
+        } catch (Exception ex) {
+            System.err.println("Exception while trying to enqueue_private_message_to_client_by_session_id: " + ex);
+            return false;
+        }
+    }
+    
+    public boolean send_private_message_to_client_by_session_id(String msg, Integer session_id) {
+
+        // Try to get client's duologue by given session_id
+        AeronMessagingServerDuologue duologue
+                = this.client_duologues.get(session_id);
+
+        // Check we found the duologue instance
+        if (duologue == null) {
+            return false;
+        }
+        
+        try {
+            return duologue.send_private_message_to_client(msg);
+            
+        } catch (Exception ex) {
+            System.err.println("Exception while trying to send_private_message_to_client_by_session_id: " + ex);
+            return false;
+        }
+    }
+    
+    
+    /**
+     * Simply dequeue 1 message from given connected client session.
+     * 
+     * @param msg
+     * @param session_id
+     * @return 
+     */
+    public String get_private_message_by_session_id(Integer session_id) {
+
+        // Try to get client's duologue by given session_id
+        AeronMessagingServerDuologue duologue
+                = this.client_duologues.get(session_id);
+
+        // Check we found the duologue instance
+        if (duologue == null) {
+            return null;
+        }
+        
+        try {
+            return duologue.get_private_message();
+            
+        } catch (Exception ex) {
+            System.err.println("Exception while trying to get_private_message_to_client_by_session_id: " + ex);
+            return null;
+        }
+    }
+
+    /**
+     * Iterate all client_duologues and duologue.poll() on each of them
+     * (basically private_subscription.poll())
+     *
+     * @return
+     */
     public int poll() {
         this.executor.assertIsExecutorThread();
         
@@ -336,7 +416,7 @@ public final class ClientState {
          * Get the current time; used to expire duologues.
          */
         final Instant now = this.clock.instant();
-        
+
         // Let's keep track on total sum of all poll'ed fragmetns
         int polled_fragments_count = 0;
         
@@ -382,4 +462,72 @@ public final class ClientState {
         }
         return polled_fragments_count;
     }
+
+    /**
+     * Iterate all client_duologues and duologue.send_enqueued_messages() on
+     * each of them (basically send_message() using private_publication)
+     *
+     * @return
+     */
+    public int send_enqueued_messages() {
+        this.executor.assertIsExecutorThread();
+        
+        final Iterator<Map.Entry<Integer, AeronMessagingServerDuologue>> iter
+                = this.client_duologues.entrySet().iterator();
+
+        /**
+         * Get the current time; used to expire duologues.
+         */
+        final Instant now = this.clock.instant();
+
+        // Let's keep track on total sum of all poll'ed fragmetns
+        int sent_messages_count = 0;
+        
+        while (iter.hasNext()) {
+            final Map.Entry<Integer, AeronMessagingServerDuologue> entry = iter.next();
+            final AeronMessagingServerDuologue duologue = entry.getValue();
+            
+            final String session_name
+                    = Integer.toString(entry.getKey().intValue());
+
+            /**
+             * If the duologue has either been closed, or has expired, it needs
+             * to be deleted.
+             */
+            boolean delete = false;
+            if (duologue.isExpired(now)) {
+                LOG.debug("[{}] duologue expired", session_name);
+                delete = true;
+            }
+            
+            if (duologue.isClosed()) {
+                LOG.debug("[{}] duologue closed", session_name);
+                delete = true;
+            }
+            
+            if (delete) {
+                try {
+                    duologue.close();
+                } finally {
+                    LOG.debug("[{}] deleted duologue", session_name);
+                    iter.remove();
+                    this.port_allocator.free(duologue.portData());
+                    this.port_allocator.free(duologue.portControl());
+                    this.address_counter.decrement(duologue.ownerAddress());
+                }
+                continue;
+            }
+
+            /**
+             * Otherwise, poll the duologue for activity.
+             */
+            try {
+                sent_messages_count += duologue.send_enqueued_messages();
+            } catch (IOException ex) {
+                LOG.error("Exception caught while tryign to duologue.send_enqueued_messages(). Details: " + ex);
+            }
+        }
+        return sent_messages_count;
+    }
+    
 }

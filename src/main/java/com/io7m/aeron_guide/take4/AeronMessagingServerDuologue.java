@@ -19,6 +19,7 @@ import java.time.Clock;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.Objects;
+import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -41,6 +42,9 @@ public final class AeronMessagingServerDuologue implements AutoCloseable {
     private boolean closed;
     private Publication private_publication;     // "private_" means "per individual connected client", not shared with others (liek "all_clients" pub/sub
     private Subscription private_subscription;   // same
+
+    private final ConcurrentLinkedQueue<String> outgoing_messages_to_private_queue = new ConcurrentLinkedQueue();
+    private final ConcurrentLinkedQueue<String> incoming_messages_from_private_queue = new ConcurrentLinkedQueue();
 
     private AeronMessagingServerDuologue(
             final AeronMessagingServerExecutorService in_exec,
@@ -155,8 +159,10 @@ public final class AeronMessagingServerDuologue implements AutoCloseable {
     }
 
     /**
-     * Poll the duologue for activity.
-     * The handler will pass received message to on_private_message_received()
+     * Poll the duologue for activity.The handler will pass received message to
+     * on_private_message_received(), which will add message into the incoming_messages_from_private_queue.
+     *
+     * @return
      */
     public int poll() {
         this.exec.assertIsExecutorThread();
@@ -164,25 +170,79 @@ public final class AeronMessagingServerDuologue implements AutoCloseable {
     }
 
     /**
-     * Dimon: this method sends a "private" message to the client (the message
+     * This method actually sends a "private" message to the client (the message
      * will not be seen by other clients, it will go through "per client"
      * publication channel dedicated to only this one particular client).
      *
-     * @param msg
+     * @param message
      * @throws IOException
      */
-    public void send_private_message_to_client(
-            String msg)
+    public boolean send_private_message_to_client(
+            String message)
             throws IOException {
 
         if (private_publication.isConnected()) {
-            MessagesHelper.sendMessage(
+            MessagesHelper.send_message(
                     this.private_publication,
                     this.send_buffer,
-                    msg);
+                    message);
+            return true;
         }
-        return;
+        return false;
+    }
 
+    /**
+     * Simply add given message into the outgoing message queue (private
+     * channel).
+     *
+     * @param message
+     * @return
+     * @throws IOException
+     */
+    public boolean enqueue_private_message_to_client(
+            String message)
+            throws IOException {
+
+        if (private_publication.isConnected()) {
+            this.outgoing_messages_to_private_queue.add(message);
+            return true;
+        }
+        return false;
+    }
+
+    /**
+     * Simply dequeue 1 message from given connected client.
+     * 
+     * @return 
+     */
+    public String get_private_message() {
+        if (outgoing_messages_to_private_queue.isEmpty()) {
+            return null;
+        }
+        return outgoing_messages_to_private_queue.poll();
+    }
+    
+    /**
+     * Poll the duologue for activity.The handler will pass received message to
+     * on_private_message_received()
+     *
+     * @return
+     */
+    public int send_enqueued_messages()
+            throws IOException {
+
+        this.exec.assertIsExecutorThread();
+
+        if (!private_publication.isConnected() || outgoing_messages_to_private_queue.isEmpty()) {
+            return 0;
+        }
+
+        String outgoing_message = outgoing_messages_to_private_queue.poll();
+        if (send_private_message_to_client(outgoing_message)) {
+            return 1;
+        } else {
+            return 0;
+        }
     }
 
     private void on_private_message_received( // from_client
@@ -193,12 +253,15 @@ public final class AeronMessagingServerDuologue implements AutoCloseable {
             throws IOException {
         this.exec.assertIsExecutorThread();
 
-        final String session_name
-                = Integer.toString(header.sessionId());
+//        final String session_name
+//                = Integer.toString(header.sessionId());
         final String message
                 = MessagesHelper.parseMessageUTF8(buffer, offset, length);
 
-        LOG.debug("[{}] received private message from client: {}", session_name, message);
+        // Simply place incoming private message into the duologue.incoming_messages_from_private_queue
+        incoming_messages_from_private_queue.add(message);
+
+//        LOG.debug("[{}] received private message from client: {}", session_name, message);
     }
 
     private void setPublicationSubscription(
