@@ -28,11 +28,12 @@ AERON_CLIENT_PORT=33001
 AERON_CLIENT_IP=0.0.0.0
 
 # Making own shared-mem-mapped folder for each client
-AERON_CLIENT_DIR=/run/shm/my-aeron-client-take4.pid-${PID}
+#AERON_CLIENT_DIR=/run/shm/my-aeron-client-take4.pid-${PID}  # use this for multiple clients on one machine (note: will take some RAM for each PID, and does not cleanup after)
+AERON_CLIENT_DIR=/run/shm/my-aeron-client-take4              # use this for a single 
 
 # Let's rock!
 JAVA_HOME=/usr/lib/jvm/java-8-openjdk-amd64 \
   mvn \
-  "-Dexec.args=-classpath %classpath com.io7m.aeron_guide.take4.AeronMessagingClient ${AERON_CLIENT_DIR} ${AERON_SERVER_IP} ${AERON_SERVER_DATA_PORT} ${AERON_SERVER_CONTROL_PORT}" \
+  "-Dexec.args=-classpath %classpath com.io7m.aeron_guide.take4.aeron_messaging.client.AeronMessagingClient ${AERON_CLIENT_DIR} ${AERON_SERVER_IP} ${AERON_SERVER_DATA_PORT} ${AERON_SERVER_CONTROL_PORT}" \
    -Dexec.executable=/usr/lib/jvm/java-8-openjdk-amd64/bin/java \
    org.codehaus.mojo:exec-maven-plugin:1.5.0:exec

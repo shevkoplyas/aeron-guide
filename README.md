@@ -40,3 +40,127 @@ Mark's work is licensed under a Creative Commons Attribution 4.0 International L
  The goal of "take4" is to make it generic bass to exchange messages between a server and arbitrary number (<100) clients
  under good load (max bandwidth yet to be determined after "take4" is compleete).
  
+# Docs on Aeron
+https://www.javadoc.io/doc/io.aeron/aeron-driver/1.12.0/io/aeron/Publication.html#isConnected--
+
+# Keep your Aeron version up-to-date by periodically reviewing official Aeron releases:
+https://github.com/real-logic/aeron/releases
+
+For example today (30-Apr-2021) the latest release is "1.31.2" published on Feb 14, 2021,
+but we use 1.8.2!
+
+# To check which Aeron version you require as as dependency check pom.xml file.
+
+# To check which Aeron version(s) maven have installed on your machine:
+tree ~/.m2/repository/io/aeron
+/home/dima/.m2/repository/io/aeron
+├── aeron-agent
+│   └── 1.8.2
+│       ├── aeron-agent-1.8.2-all.jar
+│       ├── aeron-agent-1.8.2-all.jar.sha1
+│       ├── aeron-agent-1.8.2.pom
+│       ├── aeron-agent-1.8.2.pom.sha1
+│       └── _remote.repositories
+├── aeron-client
+│   └── 1.8.2
+│       ├── aeron-client-1.8.2.jar
+│       ├── aeron-client-1.8.2.jar.sha1
+│       ├── aeron-client-1.8.2.pom
+│       ├── aeron-client-1.8.2.pom.sha1
+│       └── _remote.repositories
+└── aeron-driver
+    └── 1.8.2
+        ├── aeron-driver-1.8.2.jar
+        ├── aeron-driver-1.8.2.jar.sha1
+        ├── aeron-driver-1.8.2.pom
+        ├── aeron-driver-1.8.2.pom.sha1
+        └── _remote.repositories
+
+To bump up Aeron version we're using we need to edit our pom.xml in 3 places:
+  <dependencies>
+    <dependency>
+      <groupId>io.aeron</groupId>
+      <artifactId>aeron-client</artifactId>
+      <version>1.8.2</version>
+    </dependency>
+    <dependency>
+      <groupId>io.aeron</groupId>
+      <artifactId>aeron-driver</artifactId>
+      <version>1.8.2</version>
+    </dependency>
+    <dependency>
+      <groupId>io.aeron</groupId>
+      <artifactId>aeron-agent</artifactId>
+      <version>1.8.2</version>
+      <classifier>all</classifier>
+    </dependency>
+
+
+https://repo.maven.apache.org/maven2/
+https://repo.maven.apache.org/maven2/io/aeron/aeron-client/
+
+google: maven aeron-client
+
+io.aeron » aeron-client - Maven Repository:
+https://mvnrepository.com/artifact/io.aeron/aeron-client
+click latest 1.31.2
+Copy maven snippet:
+
+<!-- https://mvnrepository.com/artifact/io.aeron/aeron-client -->
+<dependency>
+    <groupId>io.aeron</groupId>
+    <artifactId>aeron-client</artifactId>
+    <version>1.31.2</version>
+    <type>pom</type>
+</dependency>
+
+
+Copy-paste maven snippets for all all 3 client, driver, agent:
+https://mvnrepository.com/artifact/io.aeron/aeron-client/1.31.2
+https://mvnrepository.com/artifact/io.aeron/aeron-driver/1.31.2
+https://mvnrepository.com/artifact/io.aeron/aeron-agent/1.31.2
+
+# When maven dependencies failing, one can flush cached maven repo packages and increase verbosity:
+# Where -U will force update the repo, see: https://stackoverflow.com/a/50120807/7022062 for details.
+# To see the full stack trace of the errors, re-run Maven with the -e switch.
+# Re-run Maven using the -X switch to enable full debug logging.
+# 
+mvn -e -X -U clean install
+
+1.32.x
+1.32.0      <-- [ERROR] Failed to execute goal on project com.io7m.aeron-guide: Could not resolve dependencies for project com.io7m.aeron-guide:com.io7m.aeron-guide:jar:0.0.1: Could not find artifact io.aeron:aeron-agent:jar:all:1.32.0 in central (https://repo.maven.apache.org/maven2) -> [Help 1]
+Jan, 2021
+1.31.x
+1.31.2      <-- [ERROR] Failed to execute goal on project com.io7m.aeron-guide: Could not resolve dependencies for project com.io7m.aeron-guide:com.io7m.aeron-guide:jar:0.0.1: Could not find artifact io.aeron:aeron-agent:jar:all:1.31.2 in central (https://repo.maven.apache.org/maven2) -> [Help 1]
+Feb, 2021
+1.31.1	
+Nov, 2020
+1.31.0	
+Oct, 2020
+1.30.x
+1.30.0      <-- [ERROR] Failed to execute goal on project com.io7m.aeron-guide: Could not resolve dependencies for project com.io7m.aeron-guide:com.io7m.aeron-guide:jar:0.0.1: Could not find artifact io.aeron:aeron-agent:jar:all:1.30.0 in central (https://repo.maven.apache.org/maven2) -> [Help 1]
+Sep, 2020
+1.29.x
+1.29.0	
+Jul, 2020
+1.28.x
+1.28.2      <-- [ERROR] Failed to execute goal on project com.io7m.aeron-guide: Could not resolve dependencies for project com.io7m.aeron-guide:com.io7m.aeron-guide:jar:0.0.1: Could not find artifact io.aeron:aeron-agent:jar:all:1.28.2 in central (https://repo.maven.apache.org/maven2) -> [Help 1]
+May, 2020
+1.28.1	
+May, 2020
+1.28.0      <-- [ERROR] Failed to execute goal on project com.io7m.aeron-guide: Could not resolve dependencies for project com.io7m.aeron-guide:com.io7m.aeron-guide:jar:0.0.1: Could not find artifact io.aeron:aeron-agent:jar:all:1.28.0 in central (https://repo.maven.apache.org/maven2) -> [Help 1]
+May, 2020
+1.27.x
+1.27.0      <-- [ERROR] Failed to execute goal on project com.io7m.aeron-guide: Could not resolve dependencies for project com.io7m.aeron-guide:com.io7m.aeron-guide:jar:0.0.1: Could not find artifact io.aeron:aeron-agent:jar:all:1.27.0 in central (https://repo.maven.apache.org/maven2) -> [Help 1]
+Apr, 2020
+1.26.x
+1.26.0      <-- [ERROR] Failed to execute goal on project com.io7m.aeron-guide: Could not resolve dependencies for project com.io7m.aeron-guide:com.io7m.aeron-guide:jar:0.0.1: Could not find artifact io.aeron:aeron-agent:jar:all:1.26.0 in central (https://repo.maven.apache.org/maven2) -> [Help 1]
+Mar, 2020
+1.25.x
+1.25.1      <--- compiles fine (*) our current version for now... better than 1.8.2 (Mar 2018)
+Jan, 2020
+1.25.0	
+Jan, 2020
+1.24.x      <--- compiles fine
+1.24.0	
+Nov, 2019

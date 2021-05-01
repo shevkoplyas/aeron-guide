@@ -1,5 +1,9 @@
-package com.io7m.aeron_guide.take4;
+package com.io7m.aeron_guide.take4.aeron_messaging.client;
 
+import com.io7m.aeron_guide.take4.aeron_messaging.server.AeronMessagingServerSessions;
+import com.io7m.aeron_guide.take4.aeron_messaging.client.ImmutableAeronMessagingClientConfiguration;
+import com.io7m.aeron_guide.take4.aeron_messaging.common.MessagesHelper;
+import com.io7m.aeron_guide.take4.aeron_messaging.common.AeronChannelsHelper;
 import io.aeron.Aeron;
 import io.aeron.ConcurrentPublication;
 import io.aeron.FragmentAssembler;
@@ -20,8 +24,9 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.security.SecureRandom;
 import java.time.Clock;
+import java.time.Instant;
 import java.util.Objects;
-import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.ConcurrentLinkedDeque;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -33,7 +38,7 @@ public final class AeronMessagingClient implements Closeable {
 
     private static final Logger LOG = LoggerFactory.getLogger(AeronMessagingClient.class);
 
-    private static final int ECHO_STREAM_ID = 0x100500ff;
+    private static final int MAIN_STREAM_ID = 0x100500ff;
 
     private static final Pattern PATTERN_ERROR
             = Pattern.compile("^ERROR (.*)$");
@@ -54,13 +59,13 @@ public final class AeronMessagingClient implements Closeable {
     // We have 4 queues: 2 outgoing queues (private and broadcast) and 2 corresponding incoming queues.
     // See details on Queue:
     // https://docs.oracle.com/en/java/javase/16/docs/api/java.base/java/util/Queue.html
-    // In particular ConcurrentLinkedQueue:
-    // https://docs.oracle.com/en/java/javase/16/docs/api/java.base/java/util/concurrent/ConcurrentLinkedQueue.html
+    // In particular ConcurrentLinkedDeque:
+    // https://docs.oracle.com/en/java/javase/16/docs/api/java.base/java/util/concurrent/ConcurrentLinkedDeque.html
     //
-    private final ConcurrentLinkedQueue<String> outgoing_messages_to_all_clients_queue = new ConcurrentLinkedQueue();
-    private final ConcurrentLinkedQueue<String> outgoing_messages_to_private_queue = new ConcurrentLinkedQueue();
-    private final ConcurrentLinkedQueue<String> incoming_messages_from_all_clients_queue = new ConcurrentLinkedQueue();
-    private final ConcurrentLinkedQueue<String> incoming_messages_from_private_queue = new ConcurrentLinkedQueue();
+    private final ConcurrentLinkedDeque<String> outgoing_messages_to_all_clients_queue = new ConcurrentLinkedDeque();
+    private final ConcurrentLinkedDeque<String> outgoing_messages_to_private_queue = new ConcurrentLinkedDeque();
+    private final ConcurrentLinkedDeque<String> incoming_messages_from_all_clients_queue = new ConcurrentLinkedDeque();
+    private final ConcurrentLinkedDeque<String> incoming_messages_from_private_queue = new ConcurrentLinkedDeque();
 
     private AeronMessagingClient(
             final MediaDriver in_media_driver,
@@ -101,6 +106,12 @@ public final class AeronMessagingClient implements Closeable {
         return get_private_message();
     }
 
+    /**
+     * Getter f-n to retrieve an item (String) from the
+     * incoming_messages_from_private_queue.
+     *
+     * @return an item (String) or null if queue is empty.
+     */
     public String get_private_message() {
         if (!incoming_messages_from_private_queue.isEmpty()) {
             return incoming_messages_from_private_queue.poll();
@@ -108,6 +119,12 @@ public final class AeronMessagingClient implements Closeable {
         return null;
     }
 
+    /**
+     * Getter f-n to retrieve an item (String) from the
+     * incoming_messages_from_all_clients_queue.
+     *
+     * @return an item (String) or null if queue is empty.
+     */
     public String get_all_clients_control_channel_message() {
         if (!incoming_messages_from_all_clients_queue.isEmpty()) {
             return incoming_messages_from_all_clients_queue.poll();
@@ -122,11 +139,11 @@ public final class AeronMessagingClient implements Closeable {
      *
      * @return A new client
      *
-     * @throws EchoClientCreationException On any initialization error
+     * @throws ClientCreationException On any initialization error
      */
     public static AeronMessagingClient create(
             final AeronMessagingClientConfiguration configuration)
-            throws EchoClientException {
+            throws ClientException {
         Objects.requireNonNull(configuration, "configuration");
 
         final String directory
@@ -164,7 +181,7 @@ public final class AeronMessagingClient implements Closeable {
             } catch (final Exception c_ex) {
                 e.addSuppressed(c_ex);
             }
-            throw new EchoClientCreationException(e);
+            throw new ClientCreationException(e);
         }
     }
 
@@ -213,10 +230,10 @@ public final class AeronMessagingClient implements Closeable {
     /**
      * Run the client, returning when the client is finished.
      *
-     * @throws EchoClientException On any error
+     * @throws ClientException On any error
      */
     public void run()
-            throws EchoClientException {
+            throws ClientException {
         /**
          * Generate a one-time pad.
          */
@@ -249,7 +266,7 @@ public final class AeronMessagingClient implements Closeable {
             session_name = Integer.toString(all_client_publication.sessionId());
             this.waitForConnectResponse(all_client_subscription, session_name);
         } catch (final IOException e) {
-            throw new EchoClientIOException(e);
+            throw new ClientIOException(e);
         }
 
         /**
@@ -267,18 +284,18 @@ public final class AeronMessagingClient implements Closeable {
                         all_client_publication
                 );
             } catch (final IOException e) {
-                throw new EchoClientIOException(e);
+                throw new ClientIOException(e);
             }
         }
     }
 
     private void runMainMessageProcessingLoop(
-            final UnsafeBuffer buffer,
+            final UnsafeBuffer tmp_send_buffer,
             final String session_name,
             final Subscription private_subscription,
             final Publication private_publication,
-            final Subscription all_client_subscription,
-            final Publication all_client_publication
+            final Subscription all_clients_subscription,
+            final Publication all_clients_publication
     )
             throws IOException {
         final FragmentHandler private_subscription_message_handler
@@ -301,65 +318,175 @@ public final class AeronMessagingClient implements Closeable {
         long total_messages_sent_count = 0;
         long total_messages_sent_size = 0;
         long polled_fragmetns_total_count = 0;
+        long failed_to_send_count = 0;
+        Instant main_loop_start_instant = clock.instant();
+        long main_loop_start_epoch_ms = main_loop_start_instant.toEpochMilli();
+        long main_loop_iteration_count = 0;
+        long stats_report_count = 0;
+        long last_stats_sent_epoch_ms = 0; // keep track of exact ms when report was generated to avoid sending it multiple times (loop is fast)
         while (true) {
+            main_loop_iteration_count++;
 
-//            // Send a message via private publication
-//            MessagesHelper.sendMessage(
-//                    private_publication,
-//                    buffer,
-//                    "client ---private---> server: Hi server! My local client-time is " + clock.instant().toString());
-//
-//            // Wend a message via all_client_publication!
-//            if (packets_count % 3 == 0) {
-//                MessagesHelper.sendMessage(
-//                        all_client_publication,
-//                        buffer,
-//                        "client ---all_client_publication---> server: Random number: " + Long.toUnsignedString(this.random.nextLong(), 16) + ". Local client-time is " + clock.instant().toString());
-//            }
+            // Get current time in 2 forms: Instant and epoch_ms (one will be used for human-readable time, other for "robots":)
+            Instant now_instant = clock.instant();
+            long now_epoch_ms = now_instant.toEpochMilli();
+
             // Try to receive (poll) messages from all subscriptions
             // We have 1 private subscription (server sends messages to only this client)
-            int fragments_received = private_subscription.poll(private_subscription_message_handler, 1000);
+            int fragments_received = private_subscription.poll(private_subscription_message_handler, 100);
 
             // We have "all client" subscription, which sends the same things to all connected clients.
-            fragments_received += all_client_subscription.poll(all_client_subscription_message_handler, 1000);
+            fragments_received += all_clients_subscription.poll(all_client_subscription_message_handler, 100);
 
             // Check 2 outbound queues:  1-of-2) outgoing_messages_to_all_clients_queue
             int current_iteration_messages_sent_count = 0;
             if (!outgoing_messages_to_all_clients_queue.isEmpty()) {
                 String outgoing_message = outgoing_messages_to_all_clients_queue.poll();   // Queue.poll() - Retrieves and removes the head of this queue, or returns null if this queue is empty.
-                MessagesHelper.send_message(
-                        all_client_publication,
-                        buffer,
-                        outgoing_message);
-                total_messages_sent_count++;
-                total_messages_sent_size += outgoing_message.length();
-                current_iteration_messages_sent_count++;
+
+                // Try to send the message.
+                try {
+                    // This might throw: java.io.IOException: Could not send message: Error code: Back pressured
+                    MessagesHelper.send_message(
+                            all_clients_publication,
+                            tmp_send_buffer,
+                            outgoing_message);
+
+                    // Successfully sent message, increase some stats
+                    total_messages_sent_count++;
+                    total_messages_sent_size += outgoing_message.length();
+                    current_iteration_messages_sent_count++;
+                } catch (IOException ex) {
+                    // Failed to send the message, put it back into the front of the queue
+                    outgoing_messages_to_all_clients_queue.addFirst(outgoing_message);
+                    // Increase "failed_to_send_count" stats
+                    failed_to_send_count++;
+                }
+            }
+
+// stresstest
+            if (main_loop_iteration_count % 300 == 0) {
+                outgoing_messages_to_private_queue.add("asdf lj fasljfls;aj fl;sajkdf;lasjkdfl;askjdfl;asjkfsl;akjdfsl;ak jfsla;kjfsla;djkf asl;d fjk");
             }
 
             // Check 2 outbound queues:  2-of-2) outgoing_messages_to_private_queue
             if (!outgoing_messages_to_private_queue.isEmpty()) {
                 String outgoing_message = outgoing_messages_to_private_queue.poll();   // Queue.poll() - Retrieves and removes the head of this queue, or returns null if this queue is empty.
-                MessagesHelper.send_message(
-                        all_client_publication,
-                        buffer,
-                        outgoing_message);
-                total_messages_sent_count++;
-                total_messages_sent_size += outgoing_message.length();
-                current_iteration_messages_sent_count++;
-            }
 
-            // Sleep 1ms only if no fragments received and there was nothing to send
-            if ((fragments_received + current_iteration_messages_sent_count) == 0) {
                 try {
-                    Thread.sleep(1L);
-                } catch (final InterruptedException e) {
-                    Thread.currentThread().interrupt();
+                    // Try to send the message.
+                    // This might throw: java.io.IOException: Could not send message: Error code: Back pressured
+                    MessagesHelper.send_message(
+                            private_publication,
+                            tmp_send_buffer,
+                            outgoing_message);
+
+                    // Successfully sent message, increase some stats
+                    total_messages_sent_count++;
+                    total_messages_sent_size += outgoing_message.length();
+                    current_iteration_messages_sent_count++;
+
+                } catch (IOException ex) {
+                    // Failed to send the message, put it back into the front of the queue
+                    outgoing_messages_to_private_queue.addFirst(outgoing_message);
+                    // Increase "failed_to_send_count" stats
+                    failed_to_send_count++;
                 }
             }
 
+            // Send stats to the server's "all clients" channel once every 10 seconds
+            // Every 10 sec send PUBLISH stats message via all_clients_publication with some client stats.
+            if (now_epoch_ms > last_stats_sent_epoch_ms + 10000
+                    // && all_clients_publication.isConnected()  - let's pring stats even when no clients connected, just for debug, and we'll .send_message() only if anybody connected
+                    && last_stats_sent_epoch_ms != now_epoch_ms) {
+
+                // Calculate some stats
+                long main_loop_run_duration_ms = now_epoch_ms - main_loop_start_epoch_ms + 1;  // +1 is a cheesy way to avoid /0 and it won't matter after few seconds run
+                long average_tx_message_rate_per_s = total_messages_sent_count * 1000 / main_loop_run_duration_ms;
+                long average_tx_bytes_rate_per_ms = total_messages_sent_size / main_loop_run_duration_ms;
+                long average_rx_fragments_rate_per_ms = polled_fragmetns_total_count / main_loop_run_duration_ms;
+                last_stats_sent_epoch_ms = now_epoch_ms;
+                stats_report_count++;
+
+                String server_stats = "{\"mime_type\": \"client/stats\", "
+                        + "\"stats_report_count\": " + stats_report_count + ", "
+                        + "\"sent_messages_count\": " + total_messages_sent_count + ", "
+                        + "\"sent_messages_size\": " + total_messages_sent_size + ", "
+                        // This might be terribly slow on large gueues since it will have to walk through the whole chain of objects in the queue                                        
+                        //                                        + "\"incoming_messages_from_all_clients_queue_size\": " + incoming_messages_from_all_clients_queue.size() + ", "
+                        + "\"polled_fragmetns_total_count\": " + polled_fragmetns_total_count + ", "
+                        + "\"failed_to_send_count\": " + failed_to_send_count + ", "
+                        + "\"main_loop_run_duration_ms\": " + main_loop_run_duration_ms + ", "
+                        + "\"average_tx_message_rate_per_s\": " + average_tx_message_rate_per_s + ", "
+                        + "\"average_tx_bytes_rate_per_ms\": " + average_tx_bytes_rate_per_ms + ", "
+                        + "\"average_rx_fragments_rate_per_ms\": " + average_rx_fragments_rate_per_ms + ", "
+                        + "\"timestamp_epoch_ms\": " + now_epoch_ms + ", "
+                        + "\"timestamp\": " + now_instant.toString()
+                        + "}";
+
+                // Print stats to the terminal even if nobody connected
+                LOG.debug("CLIENT STATS: " + server_stats);
+
+                // Send the stats message to the client, only if at least 1 client is connected
+                if (all_clients_publication.isConnected()) {
+                    // We're bypassing the outgoing queue and directly "submit()" message into the ExecutorService here.
+                    // We could do both - .sendMessage() and inject it into the queue, so the receiving side (client) 
+                    // will get server stats and can track what is the lag on that particular queue shovelling.
+                    // For example if we have 100 messages in the outgoing queue, then it will take 100 "main loop" iterations
+                    // to get to that enqueued message.
+                    // The epoch_ms can be used as a "key" to match the two messages on the client side.
+                    // Try to send the message.
+                    try {
+                        // This might throw: java.io.IOException: Could not send message: Error code: Back pressured
+                        MessagesHelper.send_message(
+                                all_clients_publication,
+                                tmp_send_buffer,
+                                server_stats
+                        );
+                        // Successfully sent message, increase some stats
+                        total_messages_sent_count++;
+                        total_messages_sent_size += server_stats.length();
+                        current_iteration_messages_sent_count++;
+
+//                    // Let's actually do it!
+//                    this.send_all_clients_control_channel_message(server_stats);
+//                    // Alternatively we could iterate all private connections and send message to all clients
+//                    // using: clients_state_tracker.sent_private_message_to_all_clients(server_stats),
+//                    // which would deliver the message to all clients once, but via different channel
+                        // Successfully sent message, increase some stats
+//                        total_messages_sent_count++;
+//                        total_messages_sent_size += server_stats.length();
+//                        current_iteration_messages_sent_count++;
+
+                    } catch (IOException ex) {
+                        // Failed to send the message, put it back into the front of the queue
+                        outgoing_messages_to_all_clients_queue.addFirst(server_stats);
+                        // Increase "failed_to_send_count" stats
+                        failed_to_send_count++;
+                    }
+                }
+            }
+
+//            // Sleep 1ms only if no fragments received and there was nothing to send
+//            if ((fragments_received + current_iteration_messages_sent_count) == 0) {
+//                try {
+//                    Thread.sleep(1L);
+//                } catch (final InterruptedException e) {
+//                    Thread.currentThread().interrupt();
+//                }
+//            }
         }
     }
 
+    /**
+     * <pre>
+     * The incoming_messages_from_all_clients_queue  <-- got filled by on_all_clients_message_received()  <-- used by all_client_subscription_message_handler() <-- used by all_client_subscription.poll()
+     * </pre>
+     *
+     * @param session_name
+     * @param buffer
+     * @param offset
+     * @param length
+     */
     private void on_all_clients_message_received(
             final String session_name,
             final DirectBuffer buffer,
@@ -368,10 +495,20 @@ public final class AeronMessagingClient implements Closeable {
         final String message
                 = MessagesHelper.parseMessageUTF8(buffer, offset, length);
         this.incoming_messages_from_all_clients_queue.add(message);
-//        LOG.debug("[{}] on_all_clients_message_received: {}", session_name, message);
+        LOG.debug("[{}] on_all_clients_message_received: {}", session_name, message);
 
     }
 
+    /**
+     * <pre>
+     * The incoming_messages_from_private_queue  <-- got filled by on_private_message_received()  <-- used by private_subscription_message_handler()    <-- used by private_subscription.poll()
+     * </pre>
+     *
+     * @param session_name
+     * @param buffer
+     * @param offset
+     * @param length
+     */
     private void on_private_message_received(
             final String session_name,
             final DirectBuffer buffer,
@@ -396,14 +533,14 @@ public final class AeronMessagingClient implements Closeable {
     }
 
     private Publication setupConnectPublication()
-            throws EchoClientTimedOutException {
+            throws ClientTimedOutException {
         final ConcurrentPublication publication
                 = AeronChannelsHelper.createPublicationWithSession(
                         this.aeron,
                         this.configuration.remoteAddress(),
                         this.remote_data_port,
                         this.remote_session,
-                        ECHO_STREAM_ID);
+                        MAIN_STREAM_ID);
 
         for (int index = 0; index < 1000; ++index) {
             if (publication.isConnected()) {
@@ -419,18 +556,18 @@ public final class AeronMessagingClient implements Closeable {
         }
 
         publication.close();
-        throw new EchoClientTimedOutException("Making CONNECT publication to server");
+        throw new ClientTimedOutException("Making CONNECT publication to server");
     }
 
     private Subscription setupConnectSubscription()
-            throws EchoClientTimedOutException {
+            throws ClientTimedOutException {
         final Subscription subscription
                 = AeronChannelsHelper.createSubscriptionDynamicMDCWithSession(
                         this.aeron,
                         this.configuration.remoteAddress(),
                         this.remote_control_port,
                         this.remote_session,
-                        ECHO_STREAM_ID);
+                        MAIN_STREAM_ID);
 
         for (int index = 0; index < 1000; ++index) {
             if (subscription.isConnected() && subscription.imageCount() > 0) {
@@ -446,14 +583,14 @@ public final class AeronMessagingClient implements Closeable {
         }
 
         subscription.close();
-        throw new EchoClientTimedOutException(
+        throw new ClientTimedOutException(
                 "Making CONNECT subscription to server");
     }
 
     private void waitForConnectResponse(
             final Subscription all_client_subscription,
             final String session_name)
-            throws EchoClientTimedOutException, EchoClientRejectedException {
+            throws ClientTimedOutException, ClientRejectedException {
         LOG.debug("waiting for response");
 
         final FragmentHandler handler
@@ -471,7 +608,7 @@ public final class AeronMessagingClient implements Closeable {
             all_client_subscription.poll(handler, 1000);
 
             if (this.failed) {
-                throw new EchoClientRejectedException("Server rejected this client");
+                throw new ClientRejectedException("Server rejected this client");
             }
 
             if (this.remote_ports_received) {
@@ -495,7 +632,7 @@ public final class AeronMessagingClient implements Closeable {
             }
         }
 
-        throw new EchoClientTimedOutException(
+        throw new ClientTimedOutException(
                 "Waiting for CONNECT response from server (connect_timeout_ms value was " + connect_timeout_ms + ")");
     }
 
@@ -592,13 +729,13 @@ public final class AeronMessagingClient implements Closeable {
     }
 
     private Publication setupAllClientsPublication()
-            throws EchoClientTimedOutException {
+            throws ClientTimedOutException {
         final ConcurrentPublication publication
                 = AeronChannelsHelper.createPublication(
                         this.aeron,
                         this.configuration.remoteAddress(),
                         this.configuration.remoteInitialPort(),
-                        ECHO_STREAM_ID);
+                        MAIN_STREAM_ID);
 
         for (int index = 0; index < 1000; ++index) {
             if (publication.isConnected()) {
@@ -614,17 +751,17 @@ public final class AeronMessagingClient implements Closeable {
         }
 
         publication.close();
-        throw new EchoClientTimedOutException("Making initial publication to server");
+        throw new ClientTimedOutException("Making initial publication to server");
     }
 
     private Subscription setupAllClientsSubscription()
-            throws EchoClientTimedOutException {
+            throws ClientTimedOutException {
         final Subscription subscription
                 = AeronChannelsHelper.createSubscriptionDynamicMDC(
                         this.aeron,
                         this.configuration.remoteAddress(),
                         this.configuration.remoteInitialControlPort(),
-                        ECHO_STREAM_ID);
+                        MAIN_STREAM_ID);
 
         for (int index = 0; index < 1000; ++index) {
             if (subscription.isConnected() && subscription.imageCount() > 0) {
@@ -640,7 +777,7 @@ public final class AeronMessagingClient implements Closeable {
         }
 
         subscription.close();
-        throw new EchoClientTimedOutException(
+        throw new ClientTimedOutException(
                 "Making initial subscription to server");
     }
 

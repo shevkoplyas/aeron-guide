@@ -1,4 +1,4 @@
-package com.io7m.aeron_guide.take4;
+package com.io7m.aeron_guide.take4.aeron_messaging.server;
 
 /**
  * An exception occurred whilst trying to create the server.

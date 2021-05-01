@@ -1,10 +1,10 @@
-package com.io7m.aeron_guide.take4;
+package com.io7m.aeron_guide.take4.aeron_messaging.client;
 
 /**
  * The client timed out when it attempted to connect to the server.
  */
 
-public final class EchoClientTimedOutException extends EchoClientException
+public final class ClientTimedOutException extends ClientException
 {
   /**
    * Create an exception.
@@ -12,7 +12,7 @@ public final class EchoClientTimedOutException extends EchoClientException
    * @param message The message
    */
 
-  public EchoClientTimedOutException(final String message)
+  public ClientTimedOutException(final String message)
   {
     super(message);
   }

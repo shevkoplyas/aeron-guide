@@ -1,5 +1,10 @@
-package com.io7m.aeron_guide.take4;
+package com.io7m.aeron_guide.take4.aeron_messaging.server;
 
+import com.io7m.aeron_guide.take4.aeron_messaging.server.ImmutableAeronMessagingServerConfiguration;
+import com.io7m.aeron_guide.take4.aeron_messaging.server.ImmutableAeronMessagingServerConfiguration;
+import com.io7m.aeron_guide.take4.aeron_messaging.server.ImmutableAeronMessagingServerConfiguration;
+import com.io7m.aeron_guide.take4.aeron_messaging.common.MessagesHelper;
+import com.io7m.aeron_guide.take4.aeron_messaging.common.AeronChannelsHelper;
 import io.aeron.Aeron;
 import io.aeron.FragmentAssembler;
 import io.aeron.Image;
@@ -19,17 +24,11 @@ import java.io.IOException;
 import java.net.InetAddress;
 import java.nio.file.Path;
 import java.nio.file.Paths;
-import java.security.SecureRandom;
 import java.time.Clock;
 import java.time.Instant;
-import java.util.HashMap;
-import java.util.Iterator;
-import java.util.Map;
 import java.util.Objects;
-import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.ConcurrentLinkedDeque;
 import java.util.concurrent.Future;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 
 /**
  * <pre>
@@ -55,9 +54,9 @@ import java.util.regex.Pattern;
  *   - working on it's own thread
  *   - is accepting messages by exposed send_broadcast(String message) method, which will simply enqueue(message)
  *     Later let's add send_private(message) method inside
- *   - is adding all received messages into concurrent containers ConcurrentLinkedQueue.
+ *   - is adding all received messages into concurrent containers ConcurrentLinkedDeque.
  *     See details on Queue: https://docs.oracle.com/en/java/javase/16/docs/api/java.base/java/util/Queue.html
- *     In particular ConcurrentLinkedQueue: https://docs.oracle.com/en/java/javase/16/docs/api/java.base/java/util/concurrent/ConcurrentLinkedQueue.html
+ *     In particular ConcurrentLinkedDeque: https://docs.oracle.com/en/java/javase/16/docs/api/java.base/java/util/concurrent/ConcurrentLinkedDeque.html
  * </pre>
  */
 public final class AeronMessagingServer implements Closeable {
@@ -109,11 +108,11 @@ public final class AeronMessagingServer implements Closeable {
     // We have 4 queues: 2 outgoing queues (private and broadcast) and 2 corresponding incoming queues.
     // See details on Queue:
     // https://docs.oracle.com/en/java/javase/16/docs/api/java.base/java/util/Queue.html
-    // In particular ConcurrentLinkedQueue:
-    // https://docs.oracle.com/en/java/javase/16/docs/api/java.base/java/util/concurrent/ConcurrentLinkedQueue.html
+    // In particular ConcurrentLinkedDeque:
+    // https://docs.oracle.com/en/java/javase/16/docs/api/java.base/java/util/concurrent/ConcurrentLinkedDeque.html
     //
-    private final ConcurrentLinkedQueue<String> outgoing_messages_to_all_clients_queue = new ConcurrentLinkedQueue();
-    private final ConcurrentLinkedQueue<String> incoming_messages_from_all_clients_queue = new ConcurrentLinkedQueue();
+    private final ConcurrentLinkedDeque<String> outgoing_messages_to_all_clients_queue = new ConcurrentLinkedDeque();
+    private final ConcurrentLinkedDeque<String> incoming_messages_from_all_clients_queue = new ConcurrentLinkedDeque();
 
     //////////////////////////////// public methods to send a message to the server (enqueue messages to be sent to the server) //////////////////////
     // simply synonym / alias  for "send_all_clients_control_channel_message(message)"
@@ -317,13 +316,25 @@ public final class AeronMessagingServer implements Closeable {
                 long total_messages_sent_count = 0;
                 long total_messages_sent_size = 0;
                 long polled_fragmetns_total_count = 0;
+                long failed_to_send_count = 0;
                 UnsafeBuffer tmp_send_buffer = new UnsafeBuffer(BufferUtil.allocateDirectAligned(1024, 16));
-                LOG.debug("Server is ready and is waiting for clients to connect...");
-                while (true) {
-                    Instant clock_now_instant = clock.instant();
-                    long now_epoch_ms = clock_now_instant.toEpochMilli();
+                Instant main_loop_start_instant = clock.instant();
+                long main_loop_start_epoch_ms = main_loop_start_instant.toEpochMilli();
+                long main_loop_iteration_count = 0;
+                long stats_report_count = 0;
+                long last_stats_sent_epoch_ms = 0; // keep track of exact ms when report was generated to avoid sending it multiple times (loop is fast)
 
-                    // Try to poll messages from both "all clients" and private "per client" channels
+                LOG.debug("Server is ready and is waiting for clients to connect...");
+
+                while (true) {
+                    main_loop_iteration_count++;
+
+                    // Get current time in 2 forms: Instant and epoch_ms (one will be used for human-readable time, other for "robots":)
+                    Instant now_instant = clock.instant();
+                    long now_epoch_ms = now_instant.toEpochMilli();
+
+                    // Try to poll messages from both "all clients" and private "per client" channels.
+                    // Use executor thread (not Aeron thread).
                     Future<Integer> future_polled_fragments_count = this.executor.my_call(() -> {
 
                         // Poll messages from "all_clients" channel
@@ -365,28 +376,35 @@ public final class AeronMessagingServer implements Closeable {
                     // Now try to shovel our 2 types of our "OUTBOX" queues: 1-of-2) outgoing_messages_to_all_clients_queue
                     int current_iteration_messages_sent_count = 0;
                     if (!outgoing_messages_to_all_clients_queue.isEmpty() && get_number_of_connected_clients() > 0) {
+                        String outgoing_message = outgoing_messages_to_all_clients_queue.poll();   // Queue.poll() - Retrieves and removes the head of this queue, or returns null if this queue is empty.
                         try {
-                            String outgoing_message = outgoing_messages_to_all_clients_queue.poll();   // Queue.poll() - Retrieves and removes the head of this queue, or returns null if this queue is empty.
+                            // Try to send the message.
+                            // This might throw: java.io.IOException: Could not send message: Error code: Back pressured
                             MessagesHelper.send_message(
                                     all_clients_publication,
                                     tmp_send_buffer,
                                     outgoing_message
                             );
+
+                            // Successfully sent message, increase some stats
                             total_messages_sent_count++;
                             current_iteration_messages_sent_count++;
                             total_messages_sent_size += outgoing_message.length();
 
                         } catch (IOException ex) {
-                            LOG.error("Exception caught while trying to sendMessage() via all_clients_publication. Details: ", ex);
+                            // Failed to send the message, put it back into the front of the queue
+                            outgoing_messages_to_all_clients_queue.addFirst(outgoing_message);
+                            // Increase "failed_to_send_count" stats
+                            failed_to_send_count++;
                         }
                     }
 
                     // Try to send messages from the private "per client" queues (located inside corresponding duologue instance)
+                    // Use executor thread (not Aeron thread).
                     Future<Integer> future_sent_private_messages_count = this.executor.my_call(() -> {
 
                         // Iterate all client_duologues and duologue.poll() on each of them (basically private_subscription.poll())
                         Integer sent_private_messages_count = this.clients_state_tracker.send_enqueued_messages();
-
                         return sent_private_messages_count;
                     });
 
@@ -405,34 +423,66 @@ public final class AeronMessagingServer implements Closeable {
 
                     // Every 10 sec send PUBLISH stats message via all_clients_publication with some messaging-server stats.
                     // Only if at least 1 client is connected.
-                    if (now_epoch_ms % 10000 == 0 && all_clients_publication.isConnected()) {
+                    if (now_epoch_ms > last_stats_sent_epoch_ms + 10000
+                            // && all_clients_publication.isConnected()  - let's pring stats even when no clients connected, just for debug, and we'll .send_message() only if anybody connected
+                            && last_stats_sent_epoch_ms != now_epoch_ms) {
+                        // Calculate some stats
+                        long main_loop_run_duration_ms = now_epoch_ms - main_loop_start_epoch_ms + 1;  // +1 is a cheesy way to avoid /0 and it won't matter after few seconds run
+                        long average_tx_message_rate_per_s = total_messages_sent_count * 1000 / main_loop_run_duration_ms;
+                        long average_tx_bytes_rate_per_ms = total_messages_sent_size / main_loop_run_duration_ms;
+                        long average_rx_fragments_rate_per_ms = polled_fragmetns_total_count / main_loop_run_duration_ms;
+                        last_stats_sent_epoch_ms = now_epoch_ms;
+                        stats_report_count++;
+
                         try {
 
                             String server_stats = "{\"mime_type\": \"server/stats\", "
+                                    + "\"stats_report_count\": " + stats_report_count + ", "
                                     + "\"sent_messages_count\": " + total_messages_sent_count + ", "
                                     + "\"sent_messages_size\": " + total_messages_sent_size + ", "
                                     // This might be terribly slow on large gueues since it will have to walk through the whole chain of objects in the queue                                        
                                     //                                        + "\"incoming_messages_from_all_clients_queue_size\": " + incoming_messages_from_all_clients_queue.size() + ", "
                                     + "\"polled_fragmetns_total_count\": " + polled_fragmetns_total_count + ", "
+                                    + "\"failed_to_send_count\": " + failed_to_send_count + ", "
+                                    + "\"main_loop_run_duration_ms\": " + main_loop_run_duration_ms + ", "
+                                    + "\"average_tx_message_rate_per_s\": " + average_tx_message_rate_per_s + ", "
+                                    + "\"average_tx_bytes_rate_per_ms\": " + average_tx_bytes_rate_per_ms + ", "
+                                    + "\"average_rx_fragments_rate_per_ms\": " + average_rx_fragments_rate_per_ms + ", "
                                     + "\"timestamp_epoch_ms\": " + now_epoch_ms + ", "
-                                    + "\"timestamp\": " + clock_now_instant.toString()
+                                    + "\"timestamp\": " + now_instant.toString()
                                     + "}";
-                            // We're bypassing the outgoing queue and directly "submit()" message into the ExecutorService here.
-                            // We could do both - .sendMessage() and inject it into the queue, so the receiving side (client) 
-                            // will get server stats and can track what is the lag on that particular queue shovelling.
-                            // For example if we have 100 messages in the outgoing queue, then it will take 100 "main loop" iterations
-                            // to get to that enqueued message.
-                            // The epoch_ms can be used as a "key" to match the two messages on the client side.
-                            MessagesHelper.send_message(
-                                    all_clients_publication,
-                                    tmp_send_buffer,
-                                    server_stats
-                            );
-                            // Let's actually do it!
-                            this.send_all_clients_control_channel_message(server_stats);
-                            // Alternatively we could iterate all private connections and send message to all clients
-                            // using: clients_state_tracker.sent_private_message_to_all_clients(server_stats),
-                            // which would deliver the message to all clients once, but via different channel
+
+                            // Print stats to the terminal even if nobody connected
+                            LOG.debug("SERVER STATS: " + server_stats);
+
+                            // Send the stats message to the client, only if at least 1 client is connected
+                            if (all_clients_publication.isConnected()) {
+                                // We're bypassing the outgoing queue and directly "submit()" message into the ExecutorService here.
+                                // We could do both - .sendMessage() and inject it into the queue, so the receiving side (client) 
+                                // will get server stats and can track what is the lag on that particular queue shovelling.
+                                // For example if we have 100 messages in the outgoing queue, then it will take 100 "main loop" iterations
+                                // to get to that enqueued message.
+                                // The epoch_ms can be used as a "key" to match the two messages on the client side.
+                                MessagesHelper.send_message(
+                                        all_clients_publication,
+                                        tmp_send_buffer,
+                                        server_stats
+                                );
+                                // Successfully sent message, increase some stats
+                                total_messages_sent_count++;
+                                total_messages_sent_size += server_stats.length();
+                                current_iteration_messages_sent_count++;
+
+//                                // Let's actually do it!
+//                                this.send_all_clients_control_channel_message(server_stats);
+//                                // Alternatively we could iterate all private connections and send message to all clients
+//                                // using: clients_state_tracker.sent_private_message_to_all_clients(server_stats),
+//                                // which would deliver the message to all clients once, but via different channel
+//                                // Successfully sent message, increase some stats
+//                                total_messages_sent_count++;
+//                                total_messages_sent_size += server_stats.length();
+//                                current_iteration_messages_sent_count++;
+                            }
 
                         } catch (IOException ex) {
                             LOG.error("Exception while trying to sendMessage() via all_clients_publication. Details: ", ex);

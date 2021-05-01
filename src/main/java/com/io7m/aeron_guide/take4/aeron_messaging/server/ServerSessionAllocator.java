@@ -1,4 +1,4 @@
-package com.io7m.aeron_guide.take4;
+package com.io7m.aeron_guide.take4.aeron_messaging.server;
 
 import org.agrona.collections.IntHashSet;
 
@@ -9,7 +9,7 @@ import java.util.Objects;
  * <p>
  * An allocator for session IDs. The allocator randomly selects values from
  * the given range {@code [min, max]} and will not return a previously-returned value {@code x}
- * until {@code x} has been freed with {@code {@link EchoServerSessionAllocator#free(int)}.
+ * until {@code x} has been freed with {@code {@link ServerSessionAllocator#free(int)}.
  * </p>
  *
  * <p>
@@ -20,14 +20,14 @@ import java.util.Objects;
  * </p>
  */
 
-public final class EchoServerSessionAllocator
+public final class ServerSessionAllocator
 {
   private final IntHashSet used;
   private final SecureRandom random;
   private final int min;
   private final int max_count;
 
-  private EchoServerSessionAllocator(
+  private ServerSessionAllocator(
     final int in_min,
     final int in_max,
     final SecureRandom in_random)
@@ -56,12 +56,12 @@ public final class EchoServerSessionAllocator
    * @return A new allocator
    */
 
-  public static EchoServerSessionAllocator create(
+  public static ServerSessionAllocator create(
     final int in_min,
     final int in_max,
     final SecureRandom in_random)
   {
-    return new EchoServerSessionAllocator(in_min, in_max, in_random);
+    return new ServerSessionAllocator(in_min, in_max, in_random);
   }
 
   /**
@@ -69,14 +69,14 @@ public final class EchoServerSessionAllocator
    *
    * @return A new session ID
    *
-   * @throws EchoServerSessionAllocationException If there are no non-allocated sessions left
+   * @throws ServerSessionAllocationException If there are no non-allocated sessions left
    */
 
   public int allocate()
-    throws EchoServerSessionAllocationException
+    throws ServerSessionAllocationException
   {
     if (this.used.size() == this.max_count) {
-      throw new EchoServerSessionAllocationException(
+      throw new ServerSessionAllocationException(
         "No session IDs left to allocate");
     }
 
@@ -88,7 +88,7 @@ public final class EchoServerSessionAllocator
       }
     }
 
-    throw new EchoServerSessionAllocationException(
+    throw new ServerSessionAllocationException(
       String.format(
         "Unable to allocate a session ID after %d attempts (%d values in use)",
         Integer.valueOf(this.max_count),

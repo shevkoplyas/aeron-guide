@@ -1,4 +1,4 @@
-package com.io7m.aeron_guide.take4;
+package com.io7m.aeron_guide.take4.aeron_messaging.client;
 
 import java.util.Objects;
 
@@ -6,7 +6,7 @@ import java.util.Objects;
  * The type of exceptions raised by the client.
  */
 
-public abstract class EchoClientException extends Exception
+public abstract class ClientException extends Exception
 {
   /**
    * Create an exception.
@@ -14,7 +14,7 @@ public abstract class EchoClientException extends Exception
    * @param message The message
    */
 
-  public EchoClientException(final String message)
+  public ClientException(final String message)
   {
     super(Objects.requireNonNull(message, "message"));
   }
@@ -25,7 +25,7 @@ public abstract class EchoClientException extends Exception
    * @param cause The cause
    */
 
-  public EchoClientException(final Throwable cause)
+  public ClientException(final Throwable cause)
   {
     super(Objects.requireNonNull(cause, "cause"));
   }

@@ -1,4 +1,4 @@
-package com.io7m.aeron_guide.take4;
+package com.io7m.aeron_guide.take4.aeron_messaging.server;
 
 import java.net.InetAddress;
 import java.util.HashMap;
@@ -9,11 +9,11 @@ import java.util.Objects;
  * A counter for IP addresses.
  */
 
-public final class EchoServerAddressCounter
+public final class ServerAddressCounter
 {
   private final Map<InetAddress, Integer> counts;
 
-  private EchoServerAddressCounter()
+  private ServerAddressCounter()
   {
     this.counts = new HashMap<>();
   }
@@ -24,9 +24,9 @@ public final class EchoServerAddressCounter
    * @return A new counter
    */
 
-  public static EchoServerAddressCounter create()
+  public static ServerAddressCounter create()
   {
-    return new EchoServerAddressCounter();
+    return new ServerAddressCounter();
   }
 
   /**

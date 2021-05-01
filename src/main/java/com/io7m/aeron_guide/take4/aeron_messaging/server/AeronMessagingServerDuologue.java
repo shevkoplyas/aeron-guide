@@ -1,5 +1,8 @@
-package com.io7m.aeron_guide.take4;
+package com.io7m.aeron_guide.take4.aeron_messaging.server;
 
+import com.io7m.aeron_guide.take4.aeron_messaging.common.MessagesHelper;
+import com.io7m.aeron_guide.take4.aeron_messaging.server.AeronMessagingServer;
+import com.io7m.aeron_guide.take4.aeron_messaging.common.AeronChannelsHelper;
 import io.aeron.Aeron;
 import io.aeron.ConcurrentPublication;
 import io.aeron.FragmentAssembler;

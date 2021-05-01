@@ -3,8 +3,20 @@
  * To change this template file, choose Tools | Templates
  * and open the template in the editor.
  */
-package com.io7m.aeron_guide.take4;
+package com.io7m.aeron_guide.take4.aeron_messaging.server;
 
+import com.io7m.aeron_guide.take4.aeron_messaging.common.MessagesHelper;
+import com.io7m.aeron_guide.take4.aeron_messaging.server.AeronMessagingServerException;
+import com.io7m.aeron_guide.take4.aeron_messaging.server.AeronMessagingServerDuologue;
+import com.io7m.aeron_guide.take4.aeron_messaging.server.AeronMessagingServerExecutorService;
+import com.io7m.aeron_guide.take4.aeron_messaging.server.AeronMessagingServerSessions;
+import com.io7m.aeron_guide.take4.aeron_messaging.server.AeronMessagingServerConfiguration;
+import com.io7m.aeron_guide.take4.aeron_messaging.server.AeronMessagingServer;
+import com.io7m.aeron_guide.take4.aeron_messaging.server.ServerAddressCounter;
+import com.io7m.aeron_guide.take4.aeron_messaging.server.ServerPortAllocationException;
+import com.io7m.aeron_guide.take4.aeron_messaging.server.ServerPortAllocator;
+import com.io7m.aeron_guide.take4.aeron_messaging.server.ServerSessionAllocationException;
+import com.io7m.aeron_guide.take4.aeron_messaging.server.ServerSessionAllocator;
 import io.aeron.Aeron;
 import io.aeron.Publication;
 import java.io.IOException;
@@ -16,7 +28,7 @@ import java.util.HashMap;
 import java.util.Iterator;
 import java.util.Map;
 import java.util.Objects;
-import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.ConcurrentLinkedDeque;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import org.agrona.BufferUtil;
@@ -30,8 +42,8 @@ import org.slf4j.LoggerFactory;
  * accepting requests from clients, checking access restrictions (such as
  * enforcing the limit on duologues by a single IP address), polling existing
  * duologues for activity, and so on. We establish a rule that access to the
- * ClientState class is confined to a single thread via the EchoServerExecutor
- * type. The EchoServer class defines three methods that each essentially
+ * ClientState class is confined to a single thread via the ServerExecutor
+ * type. The server class defines three methods that each essentially
  * delegate to the ClientState class:
  *
  */
@@ -43,25 +55,25 @@ public final class ClientsStateTracker {
             = Pattern.compile("^HELLO ([0-9A-F]+)$");
     
     private final Map<Integer, InetAddress> client_session_addresses;  // map stores session_id and remote address upon "onInitialClientConnected"
-    private final Map<Integer, AeronMessagingServerDuologue> client_duologues;   // map stores session_id and allocated EchoServerDuologue (with dedicated publication/subscription)
-    private final EchoServerPortAllocator port_allocator;
+    private final Map<Integer, AeronMessagingServerDuologue> client_duologues;   // map stores session_id and allocated ServerDuologue (with dedicated publication/subscription)
+    private final ServerPortAllocator port_allocator;
     private final Aeron aeron;
     private final Clock clock;
     private final AeronMessagingServerConfiguration configuration;
     private final UnsafeBuffer send_buffer;
     private final AeronMessagingServerExecutorService executor;
-    private final EchoServerAddressCounter address_counter;
-    private final EchoServerSessionAllocator session_allocator;
+    private final ServerAddressCounter address_counter;
+    private final ServerSessionAllocator session_allocator;
 
     // The reference to the "inbox" queue for "all-clients" channel will be passed to us from the AeronMessagingServer class, where it is instantiated.
-    private final ConcurrentLinkedQueue<String> incoming_messages_from_all_clients_queue;
+    private final ConcurrentLinkedDeque<String> incoming_messages_from_all_clients_queue;
     
     ClientsStateTracker(
             final Aeron in_aeron,
             final Clock in_clock,
             final AeronMessagingServerExecutorService in_executor,
             final AeronMessagingServerConfiguration in_configuration,
-            final ConcurrentLinkedQueue<String> in_incoming_messages_from_all_clients_queue) {  // server passes us a reference to "inbox" queue for "all-clients" channel
+            final ConcurrentLinkedDeque<String> in_incoming_messages_from_all_clients_queue) {  // server passes us a reference to "inbox" queue for "all-clients" channel
         this.aeron
                 = Objects.requireNonNull(in_aeron, "Aeron");
         this.clock
@@ -77,15 +89,15 @@ public final class ClientsStateTracker {
         this.client_session_addresses = new HashMap<>(32);
         
         this.port_allocator
-                = EchoServerPortAllocator.create(
+                = ServerPortAllocator.create(
                         this.configuration.localClientsBasePort(),
                         2 * this.configuration.clientMaximumCount());
         
         this.address_counter
-                = EchoServerAddressCounter.create();
+                = ServerAddressCounter.create();
         
         this.session_allocator
-                = EchoServerSessionAllocator.create(
+                = ServerSessionAllocator.create(
                         AeronMessagingServerSessions.RESERVED_SESSION_ID_LOW,
                         AeronMessagingServerSessions.RESERVED_SESSION_ID_HIGH,
                         new SecureRandom());
@@ -140,7 +152,7 @@ public final class ClientsStateTracker {
             );
         } else {
             // Dimon: this is client's 1st message - pass it to the onInitialClientMessageProcess()
-            // to check some limits and to allocate a new EchoServerDuologue for this client.
+            // to check some limits and to allocate a new ServerDuologue for this client.
             on_initial_all_cilents_message_received(
                     publication,
                     session_name,
@@ -246,8 +258,8 @@ public final class ClientsStateTracker {
             final Integer session_boxed,
             final InetAddress owner)
             throws
-            EchoServerPortAllocationException,
-            EchoServerSessionAllocationException {
+            ServerPortAllocationException,
+            ServerSessionAllocationException {
         this.address_counter.increment(owner);
         
         final AeronMessagingServerDuologue duologue;
@@ -272,12 +284,12 @@ public final class ClientsStateTracker {
                     this.session_allocator.free(session);
                     throw e;
                 }
-            } catch (final EchoServerSessionAllocationException e) {
+            } catch (final ServerSessionAllocationException e) {
                 this.port_allocator.free(ports[0]);
                 this.port_allocator.free(ports[1]);
                 throw e;
             }
-        } catch (final EchoServerPortAllocationException e) {
+        } catch (final ServerPortAllocationException e) {
             this.address_counter.decrement(owner);
             throw e;
         }

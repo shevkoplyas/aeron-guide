@@ -23,6 +23,6 @@ AERON_SERVER_DATA_DIR=/run/shm/my-aeron-server-take4
 # Let's rock!
 JAVA_HOME=/usr/lib/jvm/java-8-openjdk-amd64 \
   mvn \
-  "-Dexec.args=-classpath %classpath com.io7m.aeron_guide.take4.AeronMessagingServer ${AERON_SERVER_DATA_DIR} ${AERON_SERVER_IP} ${AERON_SERVER_DATA_PORT} ${AERON_SERVER_CONTROL_PORT} 55000 100" \
+  "-Dexec.args=-classpath %classpath com.io7m.aeron_guide.take4.aeron_messaging.server.AeronMessagingServer ${AERON_SERVER_DATA_DIR} ${AERON_SERVER_IP} ${AERON_SERVER_DATA_PORT} ${AERON_SERVER_CONTROL_PORT} 55000 100" \
    -Dexec.executable=/usr/lib/jvm/java-8-openjdk-amd64/bin/java \
    org.codehaus.mojo:exec-maven-plugin:1.5.0:exec

@@ -1,4 +1,4 @@
-package com.io7m.aeron_guide.take4;
+package com.io7m.aeron_guide.take4.aeron_messaging.common;
 
 import io.aeron.Aeron;
 import io.aeron.AvailableImageHandler;
@@ -15,7 +15,6 @@ import static java.lang.Boolean.TRUE;
 /**
  * Convenience functions to construct publications and subscriptions.
  */
-
 public final class AeronChannelsHelper
 {
   private AeronChannelsHelper()

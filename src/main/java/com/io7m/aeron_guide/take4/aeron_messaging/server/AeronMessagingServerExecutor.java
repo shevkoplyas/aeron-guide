@@ -1,4 +1,4 @@
-package com.io7m.aeron_guide.take4;
+package com.io7m.aeron_guide.take4.aeron_messaging.server;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -28,7 +28,7 @@ public final class AeronMessagingServerExecutor implements AeronMessagingServerE
 
     @Override
     public boolean isExecutorThread() {
-        return Thread.currentThread() instanceof EchoServerThread;
+        return Thread.currentThread() instanceof ServerThread;
     }
 
     @Override
@@ -56,9 +56,9 @@ public final class AeronMessagingServerExecutor implements AeronMessagingServerE
         this.executor.shutdown();
     }
 
-    private static final class EchoServerThread extends Thread {
+    private static final class ServerThread extends Thread {
 
-        EchoServerThread(final Runnable target) {
+        ServerThread(final Runnable target) {
             super(Objects.requireNonNull(target, "target"));
         }
     }
@@ -68,7 +68,7 @@ public final class AeronMessagingServerExecutor implements AeronMessagingServerE
      */
     public static AeronMessagingServerExecutor create() {
         final ThreadFactory factory = r -> {
-            final EchoServerThread t = new EchoServerThread(r);
+            final ServerThread t = new ServerThread(r);
             t.setName(new StringBuilder(64)
                     .append("com.io7m.aeron_guide.take4.server[")
                     .append(Long.toUnsignedString(t.getId()))

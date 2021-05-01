@@ -1,4 +1,4 @@
-package com.io7m.aeron_guide.take4;
+package com.io7m.aeron_guide.take4.aeron_messaging.common;
 
 import io.aeron.Publication;
 import org.agrona.DirectBuffer;
@@ -48,17 +48,17 @@ public final class MessagesHelper
     Objects.requireNonNull(buffer, "buffer");
     Objects.requireNonNull(text, "text");
 
-    LOG.trace("[{}] send: {}", Integer.toString(pub.sessionId()), text);
+//    LOG.trace("[{}] send: {}", Integer.toString(pub.sessionId()), text);
 
     final byte[] value = text.getBytes(UTF_8);
     buffer.putBytes(0, value);
 
     long result = 0L;
-    for (int index = 0; index < 5; ++index) {
+    for (int index = 0; index < 3; ++index) {
       result = pub.offer(buffer, 0, value.length);
       if (result < 0L) {
         try {
-          Thread.sleep(100L);
+          Thread.sleep(10L);
         } catch (final InterruptedException e) {
           Thread.currentThread().interrupt();
         }

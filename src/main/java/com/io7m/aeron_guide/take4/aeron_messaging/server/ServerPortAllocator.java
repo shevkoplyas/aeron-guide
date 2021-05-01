@@ -1,4 +1,4 @@
-package com.io7m.aeron_guide.take4;
+package com.io7m.aeron_guide.take4.aeron_messaging.server;
 
 import org.agrona.collections.IntArrayList;
 import org.agrona.collections.IntHashSet;
@@ -14,7 +14,7 @@ import java.util.Collections;
  * </p>
  */
 
-public final class EchoServerPortAllocator
+public final class ServerPortAllocator
 {
   private final int port_lo;
   private final int port_hi;
@@ -30,14 +30,14 @@ public final class EchoServerPortAllocator
    * @return A new port allocator
    */
 
-  public static EchoServerPortAllocator create(
+  public static ServerPortAllocator create(
     final int port_base,
     final int max_ports)
   {
-    return new EchoServerPortAllocator(port_base, max_ports);
+    return new ServerPortAllocator(port_base, max_ports);
   }
 
-  private EchoServerPortAllocator(
+  private ServerPortAllocator(
     final int in_port_lo,
     final int in_max_ports)
   {
@@ -90,15 +90,15 @@ public final class EchoServerPortAllocator
    *
    * @return An array of allocated ports
    *
-   * @throws EchoServerPortAllocationException If there are fewer than {@code count} ports available to allocate
+   * @throws ServerPortAllocationException If there are fewer than {@code count} ports available to allocate
    */
 
   public int[] allocate(
     final int count)
-    throws EchoServerPortAllocationException
+    throws ServerPortAllocationException
   {
     if (this.ports_free.size() < count) {
-      throw new EchoServerPortAllocationException(
+      throw new ServerPortAllocationException(
         String.format(
           "Too few ports available to allocate %d ports",
           Integer.valueOf(count)));
