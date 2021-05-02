@@ -254,7 +254,11 @@ public final class AeronMessagingServer implements Closeable, Runnable {
     }
 
     /**
-     * Command-line entry point.
+     * The main() f-n is a simple example on how to instantiate and run the
+     * AeronMessagingClient class in its own thread. It is not an "entry point"
+     * of the class and is here only for demo purposes. The actual "entry point"
+     * is the run() method, which will be engaged when you call thread.start()
+     * (see main() for details).
      *
      * @param args Command-line arguments
      *

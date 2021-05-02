@@ -108,9 +108,9 @@ use Simple Binary Encoding (SBE) and we can optimize lots and lots of things in 
             // Define how many messages to inject into the queue in 1 iteration. Note: we have ~1000 iterations / sec due to 1ms sleep.
 //            int how_many_messages_to_send = 300; // ~100K messages per second: does not fly.. crushes something in Aeron driver
 //            int how_many_messages_to_send = 200; // ~200K messages per second: starts then slip down to ~170-180K messages / second throughput, then network UDP shows spikes with pauses (instead of steady flat UDP bps/pps lines)
-            int how_many_messages_to_send = 160; // ~150K messages per second: works great for hours, stable (20Kpps, 24.5MiBps = 196mbps shown by "bmon" v.4.0)
-//            int how_many_messages_to_send = 125; // ~120K messages per second: works great for hours, stable (16Kpps, 19MiBps = 152mbps shown by "bmon" v.4.0)
-//            int how_many_messages_to_send = 100; // ~100K messages per second: works great > 7 hours straight, no errors, no losses, bps/pps on "lo" i-face are perfect flat lines
+//            int how_many_messages_to_send = 160; // ~150K messages per second: works great for hours,   stable (20Kpps, 24.5MiBps = 196mbps shown by "bmon" v.4.0)
+//            int how_many_messages_to_send = 125; // ~120K messages per second: works great for hours,   stable (16Kpps, 19MiBps = 152mbps shown by "bmon" v.4.0)
+//            int how_many_messages_to_send = 110; // ~100K messages per second: works great > 7 hours straight, (13.5Kpps, 16MiBps = 128mbps shown by "bmon" v.4.0) no errors, no losses, bps/pps on "lo" i-face are perfect flat lines!
 
 
 -------------------------------------------------------------------------------

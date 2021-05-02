@@ -205,7 +205,11 @@ public final class AeronMessagingClient implements Closeable, Runnable {
     }
 
     /**
-     * Command-line entry point.
+     * The main() f-n is a simple example on how to instantiate and run the
+     * AeronMessagingClient class in its own thread. It is not an "entry point"
+     * of the class and is here only for demo purposes. The actual "entry point"
+     * is the run() method, which will be engaged when you call thread.start()
+     * (see main() for details).
      *
      * @param args Command-line arguments
      *
@@ -233,52 +237,61 @@ public final class AeronMessagingClient implements Closeable, Runnable {
                         .remoteInitialPort(remote_data_port)
                         .build();
 
-        // Start aeron_messaging_client in it's own thread, we'll use it's public methods to enqueue (send) / dequeue (receive) messages
-        final AeronMessagingClient aeron_messaging_client = create(configuration);
-        Thread aeron_messaging_thread = new Thread(aeron_messaging_client);
-        aeron_messaging_thread.start();
-
-        LOG.debug("Main thread keep chaga away while AeronMessagingClient is working in it's own separate thread...");
-
-        //
-        // Main consumer loop (it uses aeron_messaging_client to send/receive messages from/to the server)
-        // This loop is running on the "main thread", which shovels/sends messages from/to aeron_messaging_client instance.
-        //
+        // Keep trying to connect to the server "forever" with attempts done every ~5 seconds
         while (true) {
-            String incoming_private_message = aeron_messaging_client.get_private_message();
-            String incoming_public_message = aeron_messaging_client.get_all_clients_control_channel_message();
 
-            // Stresstest: client keep sending messages to server from it's "main loop" by engaging aeron_messaging_client.send_private_message(msg) method.
+            LOG.debug("Creating aeron messaging client...");
+
+            // Start aeron_messaging_client in it's own thread, we'll use it's public methods to enqueue (send) / dequeue (receive) messages
+            final AeronMessagingClient aeron_messaging_client = create(configuration);
+            Thread aeron_messaging_thread = new Thread(aeron_messaging_client);
+            aeron_messaging_thread.start();
+
+            LOG.debug("Main thread keep chaga away while AeronMessagingClient is working in it's own separate thread...");
+
             //
-            // Define how many messages to inject into the queue in 1 iteration. Note: we have ~1000 iterations / sec due to 1ms sleep.
+            // Main consumer loop (it uses aeron_messaging_client to send/receive messages from/to the server)
+            // This loop is running on the "main thread", which shovels/sends messages from/to aeron_messaging_client instance.
+            //
+            while (true) {
+                String incoming_private_message = aeron_messaging_client.get_private_message();
+                String incoming_public_message = aeron_messaging_client.get_all_clients_control_channel_message();
+
+                // Stresstest: client keep sending messages to server from it's "main loop" by engaging aeron_messaging_client.send_private_message(msg) method.
+                //
+                // Define how many messages to inject into the queue in 1 iteration. Note: we have ~1000 iterations / sec due to 1ms sleep.
 //            int how_many_messages_to_send = 300; // ~100K messages per second: does not fly.. crushes something in Aeron driver
 //            int how_many_messages_to_send = 200; // ~200K messages per second: starts then slip down to ~170-180K messages / second throughput, then network UDP shows spikes with pauses (instead of steady flat UDP bps/pps lines)
-            int how_many_messages_to_send = 160; // ~150K messages per second: works great for hours, stable (20Kpps, 24.5MiBps = 196mbps shown by "bmon" v.4.0)
+//                int how_many_messages_to_send = 160; // ~150K messages per second: works great for hours, stable (20Kpps, 24.5MiBps = 196mbps shown by "bmon" v.4.0)
 //            int how_many_messages_to_send = 125; // ~120K messages per second: works great for hours, stable (16Kpps, 19MiBps = 152mbps shown by "bmon" v.4.0)
-//            int how_many_messages_to_send = 100; // ~100K messages per second: works great > 7 hours straight, no errors, no losses, bps/pps on "lo" i-face are perfect flat lines
+                int how_many_messages_to_send = 110; // ~100K messages per second: works great > 7 hours straight, no errors, no losses, bps/pps on "lo" i-face are perfect flat lines
 
-            // Enqueue N messages to be sent via the "private per client" channel to the server.
-            for (int i = 0; i < how_many_messages_to_send; i++) {
-                aeron_messaging_client.send_private_message("Some 100-byte-long message goes here...askjdfl;asjkfsl;akjdfsl;ak jfsla;kjfsla;kf asl;d fjk 100 byte");
-            }
-
-            // If there were no incoming messages (no via "all-clients" nor via "private per client" channel), then sleep 1ms
-            if (incoming_private_message == null && incoming_public_message == null) {
-                Thread.sleep(1);
-                // Main thread checks periodically if messaging thread is still runnig.
-
-                // Check if aeron_messaging_thread is still running
-                // OR shall we use aeron_messaging_thread.getState() ?
-                if (!aeron_messaging_thread.isAlive()) {
-                    break;
+                // Enqueue N messages to be sent via the "private per client" channel to the server.
+                for (int i = 0; i < how_many_messages_to_send; i++) {
+                    aeron_messaging_client.send_private_message("Some 100-byte-long message goes here...askjdfl;asjkfsl;akjdfsl;ak jfsla;kjfsla;kf asl;d fjk 100 byte");
                 }
-            }
 
-            // TODO: we might also want to pring "main consumer loop" stats here as well...
+                // If there were no incoming messages (no via "all-clients" nor via "private per client" channel), then sleep 1ms
+                if (incoming_private_message == null && incoming_public_message == null) {
+                    Thread.sleep(1);
+                    // Main thread checks periodically if messaging thread is still runnig.
+
+                    // Check if aeron_messaging_thread is still running
+                    // OR shall we use aeron_messaging_thread.getState() ?
+                    if (!aeron_messaging_thread.isAlive()) {
+                        break;
+                    }
+                }
+
+                // TODO: we might also want to pring "main consumer loop" stats here as well...
+            }
+            LOG.debug("AeronMessagingClient.main(): main loop is complete (it should be blocking 'forever'.. have we lost the connection to the server?.");
+            // Need to close Aeron and MediaDriver, otherwise the program will not terminate.
+            aeron_messaging_client.close();
+
+            LOG.debug("Sleeping ~5sec before trying to connect to the server again...");
+            Thread.sleep(5 * 1000);
         }
-        LOG.debug("AeronMessagingClient.main(): main loop is complete. That's all falks!");
-        // Need to close Aeron and MediaDriver, otherwise the program will not terminate.
-        aeron_messaging_client.close();
     }
 
     /**
