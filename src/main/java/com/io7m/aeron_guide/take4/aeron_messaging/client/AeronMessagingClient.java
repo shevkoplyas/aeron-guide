@@ -240,18 +240,29 @@ public final class AeronMessagingClient implements Closeable, Runnable {
 
         LOG.debug("Main thread keep chaga away while AeronMessagingClient is working in it's own separate thread...");
 
-        // Some activity on the main thread, which shovels/sends messages from/to aeron_messaging_client
+        //
+        // Main consumer loop (it uses aeron_messaging_client to send/receive messages from/to the server)
+        // This loop is running on the "main thread", which shovels/sends messages from/to aeron_messaging_client instance.
+        //
         while (true) {
             String incoming_private_message = aeron_messaging_client.get_private_message();
             String incoming_public_message = aeron_messaging_client.get_all_clients_control_channel_message();
 
-            // Stresstest:
+            // Stresstest: client keep sending messages to server from it's "main loop" by engaging aeron_messaging_client.send_private_message(msg) method.
+            //
             // Define how many messages to inject into the queue in 1 iteration. Note: we have ~1000 iterations / sec due to 1ms sleep.
-            int how_many_messages_to_send = 108;
+//            int how_many_messages_to_send = 300; // ~100K messages per second: does not fly.. crushes something in Aeron driver
+//            int how_many_messages_to_send = 200; // ~200K messages per second: starts then slip down to ~170-180K messages / second throughput, then network UDP shows spikes with pauses (instead of steady flat UDP bps/pps lines)
+            int how_many_messages_to_send = 160; // ~150K messages per second: works great for hours, stable (20Kpps, 24.5MiBps = 196mbps shown by "bmon" v.4.0)
+//            int how_many_messages_to_send = 125; // ~120K messages per second: works great for hours, stable (16Kpps, 19MiBps = 152mbps shown by "bmon" v.4.0)
+//            int how_many_messages_to_send = 100; // ~100K messages per second: works great > 7 hours straight, no errors, no losses, bps/pps on "lo" i-face are perfect flat lines
+
+            // Enqueue N messages to be sent via the "private per client" channel to the server.
             for (int i = 0; i < how_many_messages_to_send; i++) {
-                aeron_messaging_client.send_private_message("asdf lj fasljfls;aj fl;sajkdf;lasjkdfl;askjdfl;asjkfsl;akjdfsl;ak jfsla;kjfsla;djkf asl;d fjk");
+                aeron_messaging_client.send_private_message("Some 100-byte-long message goes here...askjdfl;asjkfsl;akjdfsl;ak jfsla;kjfsla;kf asl;d fjk 100 byte");
             }
 
+            // If there were no incoming messages (no via "all-clients" nor via "private per client" channel), then sleep 1ms
             if (incoming_private_message == null && incoming_public_message == null) {
                 Thread.sleep(1);
                 // Main thread checks periodically if messaging thread is still runnig.
@@ -262,6 +273,8 @@ public final class AeronMessagingClient implements Closeable, Runnable {
                     break;
                 }
             }
+
+            // TODO: we might also want to pring "main consumer loop" stats here as well...
         }
         LOG.debug("AeronMessagingClient.main(): main loop is complete. That's all falks!");
         // Need to close Aeron and MediaDriver, otherwise the program will not terminate.
@@ -363,7 +376,7 @@ public final class AeronMessagingClient implements Closeable, Runnable {
                         -> on_all_clients_message_received(session_name, data, offset, length));
 
         // 
-        // Main loop (client side):
+        // Main loop (client side, inside aeron_messaging_thread):
         //   - polling messages from subscriptions (both "all-client" subscription and own private "per agent" subscription)
         //   - sending outbound messages by shovelling broadcast_messages_to_all_clients_queue
         //   - every 10 sec send PUBLISH message via all_clients_publication with server stats
@@ -375,11 +388,12 @@ public final class AeronMessagingClient implements Closeable, Runnable {
         long failed_to_send_backpressured_count = 0;
         Instant main_loop_start_instant = clock.instant();
         long main_loop_start_epoch_ms = main_loop_start_instant.toEpochMilli();
-        long main_loop_iteration_count = 0;
+        long main_loop_iterations_count = 0;
         long stats_report_count = 0;
         long last_stats_sent_epoch_ms = 0; // keep track of exact ms when report was generated to avoid sending it multiple times (loop is fast)
+
         while (true) {
-            main_loop_iteration_count++;
+            main_loop_iterations_count++;
 
             // Get current time in 2 forms: Instant and epoch_ms (one will be used for human-readable time, other for "robots":)
             Instant now_instant = clock.instant();
@@ -518,6 +532,7 @@ public final class AeronMessagingClient implements Closeable, Runnable {
                 long average_tx_message_rate_per_s = total_messages_sent_count * 1000 / main_loop_run_duration_ms;
                 long average_tx_bytes_rate_per_ms = total_messages_sent_size / main_loop_run_duration_ms;
                 long average_rx_fragments_rate_per_ms = polled_fragmetns_total_count / main_loop_run_duration_ms;
+                long main_loop_iterations_rate_per_ms = main_loop_iterations_count / main_loop_run_duration_ms;
                 last_stats_sent_epoch_ms = now_epoch_ms;
                 stats_report_count++;
 
@@ -533,6 +548,7 @@ public final class AeronMessagingClient implements Closeable, Runnable {
                         + "\"average_tx_message_rate_per_s\": " + average_tx_message_rate_per_s + ", "
                         + "\"average_tx_bytes_rate_per_ms\": " + average_tx_bytes_rate_per_ms + ", "
                         + "\"average_rx_fragments_rate_per_ms\": " + average_rx_fragments_rate_per_ms + ", "
+                        + "\"main_loop_iterations_rate_per_ms\": " + main_loop_iterations_rate_per_ms + ", "
                         + "\"timestamp_epoch_ms\": " + now_epoch_ms + ", "
                         + "\"timestamp\": " + now_instant.toString()
                         + "}";

@@ -1,6 +1,8 @@
 # aeron-guide
 An Aeron tutorial
 
+[Short description]
+
 This project is a fork from the awesome Aeron guide created by Mark Raynsford, which you can find here: <br>
 http://www.io7m.com/documents/aeron-guide/
 
@@ -10,8 +12,9 @@ https://github.com/shevkoplyas/aeron-guide/tree/master/original_guide_by_Mark_Ra
 Original Aeron guide GitHub page: <br>
 https://github.com/io7m/aeron-guide
 
---------------------------------------------
-# More details:
+-------------------------------------------------------------------------------
+
+[Long description]
 
 A mindlessly simple Echo server by Mark Raynsford was found here:
  http://www.io7m.com/documents/aeron-guide/
@@ -19,27 +22,100 @@ A mindlessly simple Echo server by Mark Raynsford was found here:
  
 Mark's work is licensed under a Creative Commons Attribution 4.0 International License. (see README-LICENSE.txt)
  
- The guide shows how to make simple echo client-server in 2 takes
- take1 - is minimalistic code and then take2 is a bit more involved.
- This "AeronMessagingServer" is kinda "take3" - a small modification
- done to the main loop to make it able to shovel thousands of messages
- per second. It also does not close initial "all client" connection,
- so we end up with every client connected to the server with 4 channels:
+The guide shows how to make simple echo client-server in 2 takes
+take1 - is minimalistic code and then take2 is a bit more involved.
+This "AeronMessagingServer" is kinda "take3" - a small modification
+done to the main loop to make it able to shovel thousands of messages
+per second. It also does not close initial "all client" connection,
+so we end up with every client connected to the server with 4 channels:
    1) one-for-all publication (any published message will go to all connected clients)
    2) one-for-all subscription (any client can write a message to the server via that channel)
    3) "private" publication (server can send a message just to one particular client)
    4) "private" subscription (any client can use to send a message to the server, but there's  no difference between (4) and (2) so it is kinda redundant)
  
- Also some steps were done to improve AeronMessagingServer integration into
- other projects. In particular AeronMessagingServer is:
+Also some steps were done to improve AeronMessagingServer integration into
+other projects. In particular AeronMessagingServer is:
    - working on it's own thread
    - is accepting messages by exposed enqueue(String message) method
    - is adding all received messages into concurrent list(s)
 
- Next "take4" added, which is no longer ECHO server, instead adding queues for all the incoming and outgoing messages.
- The goal of "take4" is to make it generic bass to exchange messages between a server and arbitrary number (<100) clients
- under good load (max bandwidth yet to be determined after "take4" is compleete).
+Next "take4" added, which is no longer ECHO server, instead adding queues for all the incoming and outgoing messages.
+The goal of "take4" is to make it generic bass to exchange messages between a server and arbitrary number (<100) clients
+under good load (max bandwidth yet to be determined after "take4" is complete).
  
+Update:
+The "take4" now represent 2 main classes:
+  1) AeronMessagingServer
+  2) AeronMessagingClient
+
+Both classes extend "Runnable" and supposed to be running in your projects in separate threads.
+See AeronMessagingServer.main() and AeronMessagingClient.main() methods as just an example on
+how to instantiate and run these 2 classes in their own threads and how to send/receive messages.
+
+The AeronMessagingClient.main() function represents a busy loop, which is keep sending a message
+to the server over and over via "private" channel and it runs on the "main thread" of the app.
+Search for that loop in the AeronMessagingClient.java class and try to fine this comment line:
+   // Stresstest: client keep sending messages to server from it's "main loop" by engaging aeron_messaging_client.send_private_message(msg) method.
+
+Note: that loop has 1ms sleep during each iteration if there were no incoming messages received.
+So in general, when there are no much of incoming messages from server to client, then the main loop
+rate is sitting arount 1000 iterations per second. Now you can modify "how_many_messages_to_send",
+which is the number of messages the client will enqueue by calling aeron_messaging_client.send_private_message(msg)
+method (which is thread safe).
+
+
+Beautiful ascii-art, which tells the whole story:
+  _______________________                                               ______________________
+ |                       |                                             |                      |
+ |          subscription | <===== all-clients channel ================<| publication          |
+ |                       |                                             |                      |
+ |           publication | >===== all-clients channel ================>| subscription         |
+ |                       |                                             |                      |
+ | AeronMessagingClient  |                                             | AeronMessagingServer |
+ |                       |                                             |                      |
+ |          subscription | <===== private "per-client" channel =======<| publication          |
+ |                       |                                             | session_id / client  |
+ |                       |                                             |                      |
+ |                       |                                             |                      |
+ |                       |                                             |                      |
+ |           publication | >===== private "per-client" channel =======>| subscription         |
+ |                       |                                             | session_id / client  |
+ |                       |                                             |                      |
+ -------------------------                                             ------------------------
+
+Anything the server sends via "all-clients" publication is going to be sent to all connected clients.
+This is great for some cases, but not desirable for others.
+Each connected client can send a message to the server's "all-client" subscription and it will not be
+broadcasted by any means.
+Each connected client have it's own "private / per-client" subscription and publication on the dedicated UDP ports
+on the server and those 2 channels are used to only communicate between the server and this one particular client.
+The server keeps track of all the successfully connected clients by the class ClientsStateTracker (see ConcurrentHashMap<Integer, AeronMessagingServerDuologue> client_duologues).
+Each connected client got assigned unique session_id int value.
+
+While testing different "stresstest" modes I found that when client/server are running on the same machine:
+    8cores, 8G of RAM, Ubuntu 20.04.2 LTS, 
+    java -version
+        openjdk version "1.8.0_292"
+        OpenJDK Runtime Environment (build 1.8.0_292-8u292-b10-0ubuntu1~20.04-b10)
+        OpenJDK 64-Bit Server VM (build 25.292-b10, mixed mode)
+    Aeron version 1.25.1
+And client is sending to the server via "private" channel small (100 bytes) messages,
+then everything works stable up to 125K messages per second! (way more than I need:)
+
+Here some notes on other different "speeds" I tried and ~150K messages / second seems to be highest stable rate,
+but of course things can be optimized alot (for example instead of treating each message as a String we could
+use Simple Binary Encoding (SBE) and we can optimize lots and lots of things in the "take4":
+            // Define how many messages to inject into the queue in 1 iteration. Note: we have ~1000 iterations / sec due to 1ms sleep.
+//            int how_many_messages_to_send = 300; // ~100K messages per second: does not fly.. crushes something in Aeron driver
+//            int how_many_messages_to_send = 200; // ~200K messages per second: starts then slip down to ~170-180K messages / second throughput, then network UDP shows spikes with pauses (instead of steady flat UDP bps/pps lines)
+            int how_many_messages_to_send = 160; // ~150K messages per second: works great for hours, stable (20Kpps, 24.5MiBps = 196mbps shown by "bmon" v.4.0)
+//            int how_many_messages_to_send = 125; // ~120K messages per second: works great for hours, stable (16Kpps, 19MiBps = 152mbps shown by "bmon" v.4.0)
+//            int how_many_messages_to_send = 100; // ~100K messages per second: works great > 7 hours straight, no errors, no losses, bps/pps on "lo" i-face are perfect flat lines
+
+
+-------------------------------------------------------------------------------
+[More details on installed Aeron, docs, versions, etc.]
+
 # Docs on Aeron by all versions!
 https://www.javadoc.io/doc/io.aeron/aeron-driver/1.12.0/io/aeron/Publication.html#isConnected--
 

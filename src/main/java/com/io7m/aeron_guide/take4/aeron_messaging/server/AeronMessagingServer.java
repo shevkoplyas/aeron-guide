@@ -292,7 +292,9 @@ public final class AeronMessagingServer implements Closeable, Runnable {
         Thread aeron_messaging_thread = new Thread(aeron_messaging_server);
         aeron_messaging_thread.start();
 
-        // Main consumer loop
+        //
+        // Main consumer loop (it uses aeron_messaging_server to send receive messages from the client(s))
+        //
         LOG.debug("Main thread keep chaga away while AeronMessagingClient is working in it's own separate thread...");
         // Some activity on the main thread, which shovels/sends messages from/to aeron_messaging_client
 
@@ -305,8 +307,11 @@ public final class AeronMessagingServer implements Closeable, Runnable {
         long last_stats_sent_epoch_ms = 0; // keep track of exact ms when report was generated to avoid sending it multiple times (loop is fast)
         Instant main_loop_start_instant = clock.instant();
         long main_loop_start_epoch_ms = main_loop_start_instant.toEpochMilli();
+        long main_loop_iterations_count = 0;
 
         while (true) {
+            main_loop_iterations_count++;
+
             // Get current time
             Instant now_instant = clock.instant();
             long now_epoch_ms = now_instant.toEpochMilli();
@@ -329,7 +334,9 @@ public final class AeronMessagingServer implements Closeable, Runnable {
 
                 // Try to read 1 private message from i-th connected client (by given session_id)
                 String private_message = aeron_messaging_server.get_private_message(client_session_id);
-                if (private_message != null) {
+//                if (private_message != null) {
+                // Keep shoveling messages for this session_id until we read them all
+                while (private_message != null) {
 
                     // For better stats, let's consider server's main_loop_start_epoch_ms when we got 1st private message from the client
                     if (total_incoming_private_messages_count == 0) {
@@ -340,6 +347,9 @@ public final class AeronMessagingServer implements Closeable, Runnable {
 
                     total_incoming_private_messages_count++;
                     iteration_incoming_private_messages_count++;
+
+                    // Get the next message, unitll we whovel them all to zero:
+                    private_message = aeron_messaging_server.get_private_message(client_session_id);
                 }
             }
 
@@ -362,11 +372,12 @@ public final class AeronMessagingServer implements Closeable, Runnable {
                 long main_loop_run_duration_ms = now_epoch_ms - main_loop_start_epoch_ms + 1;  // +1 is a cheesy way to avoid /0 and it won't matter after few seconds run
 
                 long average_rx_private_messages_per_s = total_incoming_private_messages_count * 1000 / main_loop_run_duration_ms;
-
-                LOG.debug("Thread name: " + Thread.currentThread().getName()
-                        + " Thread toString(): " + Thread.currentThread().toString()
+                long main_loop_iterations_rate_per_ms = main_loop_iterations_count / main_loop_run_duration_ms;
+                
+                LOG.debug("Main consumer loop: thread: " + Thread.currentThread().toString()
                         + " total_incoming_public_messages_count: " + total_incoming_public_messages_count
                         + " total_incoming_private_messages_count: " + total_incoming_private_messages_count
+                        + " main_loop_iterations_rate_per_ms: " + main_loop_iterations_rate_per_ms
                         + " average_rx_private_messages_per_s: " + average_rx_private_messages_per_s + " <--- !!!"
                 );
                 last_stats_sent_epoch_ms = now_epoch_ms;
@@ -399,7 +410,7 @@ public final class AeronMessagingServer implements Closeable, Runnable {
                                         header));
 
                 // 
-                // Main loop (server side):
+                // Main loop (server side, inside aeron_messaging_thread):
                 //   - polling messages from subscriptions (both "all-client" subscription and all "per each agent" subscriptions)
                 //   - sending outbound messages by shovelling outgoing_messages_to_all_clients_queue
                 //   - every 10 sec send PUBLISH message via all_clients_publication with server stats
@@ -412,12 +423,14 @@ public final class AeronMessagingServer implements Closeable, Runnable {
                 UnsafeBuffer tmp_send_buffer = new UnsafeBuffer(BufferUtil.allocateDirectAligned(1024, 16));
                 Instant main_loop_start_instant = clock.instant();
                 long main_loop_start_epoch_ms = main_loop_start_instant.toEpochMilli();
+                long main_loop_iterations_count = 0;
                 long stats_report_count = 0;
                 long last_stats_sent_epoch_ms = 0; // keep track of exact ms when report was generated to avoid sending it multiple times (loop is fast)
 
                 LOG.debug("Server is ready and is waiting for clients to connect...");
 
                 while (true) {
+                    main_loop_iterations_count++;
 
                     // Get current time in 2 forms: Instant and epoch_ms (one will be used for human-readable time, other for "robots":)
                     Instant now_instant = clock.instant();
@@ -521,6 +534,7 @@ public final class AeronMessagingServer implements Closeable, Runnable {
                         long average_tx_message_rate_per_s = total_messages_sent_count * 1000 / main_loop_run_duration_ms;
                         long average_tx_bytes_rate_per_ms = total_messages_sent_size / main_loop_run_duration_ms;
                         long average_rx_fragments_rate_per_ms = polled_fragmetns_total_count / main_loop_run_duration_ms;
+                        long main_loop_iterations_rate_per_ms = main_loop_iterations_count / main_loop_run_duration_ms;
                         last_stats_sent_epoch_ms = now_epoch_ms;
                         stats_report_count++;
 
@@ -538,6 +552,7 @@ public final class AeronMessagingServer implements Closeable, Runnable {
                                     + "\"average_tx_message_rate_per_s\": " + average_tx_message_rate_per_s + ", "
                                     + "\"average_tx_bytes_rate_per_ms\": " + average_tx_bytes_rate_per_ms + ", "
                                     + "\"average_rx_fragments_rate_per_ms\": " + average_rx_fragments_rate_per_ms + ", "
+                                    + "\"main_loop_iterations_rate_per_ms\": " + main_loop_iterations_rate_per_ms + ", "
                                     + "\"timestamp_epoch_ms\": " + now_epoch_ms + ", "
                                     + "\"timestamp\": " + now_instant.toString()
                                     + "}";
@@ -621,18 +636,15 @@ public final class AeronMessagingServer implements Closeable, Runnable {
         final Integer session_boxed
                 = Integer.valueOf(header.sessionId());
 
-// Dimon: disabling extra layer of executor.execute() call here since this whole f-n "onAllClientsClientMessage()" is alrady called from main loop via executor.execute()
-//        this.executor.execute(() -> {
         try {
             this.clients_state_tracker.onClientMessage(
                     all_clients_publication, // Dimon: we simply pass "publication" to know where to reply (if needed) and message is now a simple String.
                     session_name,
                     session_boxed,
                     message);
-        } catch (final Exception e) {
-            LOG.error("could not process client message: ", e);
+        } catch (final Exception ex) {
+            LOG.error("could not process client message: " + message + ". Exception details: ", ex);
         }
-//        });
     }
 
     /**
