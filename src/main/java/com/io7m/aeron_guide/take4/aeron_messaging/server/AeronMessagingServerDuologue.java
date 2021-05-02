@@ -219,10 +219,10 @@ public final class AeronMessagingServerDuologue implements AutoCloseable {
      * @return 
      */
     public String get_private_message() {
-        if (outgoing_messages_to_private_queue.isEmpty()) {
+        if (incoming_messages_from_private_queue.isEmpty()) {
             return null;
         }
-        return outgoing_messages_to_private_queue.poll();
+        return incoming_messages_from_private_queue.poll();
     }
     
     /**
@@ -259,7 +259,7 @@ public final class AeronMessagingServerDuologue implements AutoCloseable {
 //        final String session_name
 //                = Integer.toString(header.sessionId());
         final String message
-                = MessagesHelper.parseMessageUTF8(buffer, offset, length);
+                = MessagesHelper.parse_message_utf8(buffer, offset, length);
 
         // Simply place incoming private message into the duologue.incoming_messages_from_private_queue
         incoming_messages_from_private_queue.add(message);

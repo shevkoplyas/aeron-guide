@@ -56,6 +56,7 @@ public final class EchoMessages
     long result = 0L;
     for (int index = 0; index < 5; ++index) {
       result = pub.offer(buffer, 0, value.length);
+      //LOG.debug(" +++ sendMessage attempt number=" + index + " result = " + result);
       if (result < 0L) {
         try {
           Thread.sleep(100L);

@@ -92,8 +92,9 @@ public final class ServerSessionAllocator
       String.format(
         "Unable to allocate a session ID after %d attempts (%d values in use)",
         Integer.valueOf(this.max_count),
-        Integer.valueOf(this.used.size()),
-        Integer.valueOf(this.max_count)));
+        Integer.valueOf(this.used.size())
+      )
+    );
   }
 
   /**

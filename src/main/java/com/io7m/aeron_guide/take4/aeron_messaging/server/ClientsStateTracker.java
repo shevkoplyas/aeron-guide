@@ -24,10 +24,12 @@ import java.net.InetAddress;
 import java.security.SecureRandom;
 import java.time.Clock;
 import java.time.Instant;
+import java.util.Enumeration;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.Map;
 import java.util.Objects;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedDeque;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -55,7 +57,8 @@ public final class ClientsStateTracker {
             = Pattern.compile("^HELLO ([0-9A-F]+)$");
     
     private final Map<Integer, InetAddress> client_session_addresses;  // map stores session_id and remote address upon "onInitialClientConnected"
-    private final Map<Integer, AeronMessagingServerDuologue> client_duologues;   // map stores session_id and allocated ServerDuologue (with dedicated publication/subscription)
+    // Making client_duologues ConcurrentHashMap so we can iterate it's keys (session_ids) savely from other (main) thread (to list client's session and to try to get/send private message through them).
+    private final ConcurrentHashMap<Integer, AeronMessagingServerDuologue> client_duologues;   // map stores session_id and allocated ServerDuologue (with dedicated publication/subscription)
     private final ServerPortAllocator port_allocator;
     private final Aeron aeron;
     private final Clock clock;
@@ -85,7 +88,7 @@ public final class ClientsStateTracker {
         this.incoming_messages_from_all_clients_queue
                 = Objects.requireNonNull(in_incoming_messages_from_all_clients_queue, "incoming_messages_from_all_clients_queue");
         
-        this.client_duologues = new HashMap<>(32);
+        this.client_duologues = new ConcurrentHashMap<>(32);
         this.client_session_addresses = new HashMap<>(32);
         
         this.port_allocator
@@ -383,7 +386,18 @@ public final class ClientsStateTracker {
             return false;
         }
     }
-    
+        
+    /**
+     * List all connected clients session_id values.
+     * Attempt to get private messages from the other thread.
+     * For now other (main) thread can list session_id of connected clients and
+     * call 
+     * 
+     * @return 
+     */
+    public Enumeration<Integer> list_connected_clients_session_ids(){
+        return this.client_duologues.keys();
+    }
     
     /**
      * Simply dequeue 1 message from given connected client session.

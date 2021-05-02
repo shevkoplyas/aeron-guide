@@ -40,7 +40,7 @@ Mark's work is licensed under a Creative Commons Attribution 4.0 International L
  The goal of "take4" is to make it generic bass to exchange messages between a server and arbitrary number (<100) clients
  under good load (max bandwidth yet to be determined after "take4" is compleete).
  
-# Docs on Aeron
+# Docs on Aeron by all versions!
 https://www.javadoc.io/doc/io.aeron/aeron-driver/1.12.0/io/aeron/Publication.html#isConnected--
 
 # Keep your Aeron version up-to-date by periodically reviewing official Aeron releases:

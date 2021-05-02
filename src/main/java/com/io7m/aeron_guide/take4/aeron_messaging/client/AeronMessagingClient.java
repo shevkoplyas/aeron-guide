@@ -4,6 +4,11 @@ import com.io7m.aeron_guide.take4.aeron_messaging.server.AeronMessagingServerSes
 import com.io7m.aeron_guide.take4.aeron_messaging.client.ImmutableAeronMessagingClientConfiguration;
 import com.io7m.aeron_guide.take4.aeron_messaging.common.MessagesHelper;
 import com.io7m.aeron_guide.take4.aeron_messaging.common.AeronChannelsHelper;
+import com.io7m.aeron_guide.take4.aeron_messaging.common.send_message_exceptions.PublicationAdminAction;
+import com.io7m.aeron_guide.take4.aeron_messaging.common.send_message_exceptions.PublicationBackPressured;
+import com.io7m.aeron_guide.take4.aeron_messaging.common.send_message_exceptions.PublicationClosed;
+import com.io7m.aeron_guide.take4.aeron_messaging.common.send_message_exceptions.PublicationMaxPositionExceeded;
+import com.io7m.aeron_guide.take4.aeron_messaging.common.send_message_exceptions.PublicationNotConnected;
 import io.aeron.Aeron;
 import io.aeron.ConcurrentPublication;
 import io.aeron.FragmentAssembler;
@@ -34,11 +39,13 @@ import java.util.regex.Pattern;
  * A mindlessly simple Echo client. Found here:
  * http://www.io7m.com/documents/aeron-guide/#client_server_take_2
  */
-public final class AeronMessagingClient implements Closeable {
+public final class AeronMessagingClient implements Closeable, Runnable {
 
     private static final Logger LOG = LoggerFactory.getLogger(AeronMessagingClient.class);
 
-    private static final int MAIN_STREAM_ID = 0x100500ff;
+    // We also specify a stream ID when creating the subscription. Aeron is capable of
+    // multiplexing several independent streams of messages into a single connection.
+    private static final int MAIN_STREAM_ID = 0x100500ff; // must be the save value on client and server
 
     private static final Pattern PATTERN_ERROR
             = Pattern.compile("^ERROR (.*)$");
@@ -55,6 +62,10 @@ public final class AeronMessagingClient implements Closeable {
     private volatile boolean failed;
     private volatile int remote_session;
     private volatile int duologue_key;
+
+    // Since now we're in Runnable and in own thread, let's catch & preserve the exceptino we got and simply return.
+    // There are some ways to throw an exception from runnable, but I didn't like them: https://stackoverflow.com/questions/11584159/is-there-a-way-to-make-runnables-run-throw-an-exception
+    public Exception got_exception = null;
 
     // We have 4 queues: 2 outgoing queues (private and broadcast) and 2 corresponding incoming queues.
     // See details on Queue:
@@ -222,9 +233,39 @@ public final class AeronMessagingClient implements Closeable {
                         .remoteInitialPort(remote_data_port)
                         .build();
 
-        try (final AeronMessagingClient client = create(configuration)) {
-            client.run();
+        // Start aeron_messaging_client in it's own thread, we'll use it's public methods to enqueue (send) / dequeue (receive) messages
+        final AeronMessagingClient aeron_messaging_client = create(configuration);
+        Thread aeron_messaging_thread = new Thread(aeron_messaging_client);
+        aeron_messaging_thread.start();
+
+        LOG.debug("Main thread keep chaga away while AeronMessagingClient is working in it's own separate thread...");
+
+        // Some activity on the main thread, which shovels/sends messages from/to aeron_messaging_client
+        while (true) {
+            String incoming_private_message = aeron_messaging_client.get_private_message();
+            String incoming_public_message = aeron_messaging_client.get_all_clients_control_channel_message();
+
+            // Stresstest:
+            // Define how many messages to inject into the queue in 1 iteration. Note: we have ~1000 iterations / sec due to 1ms sleep.
+            int how_many_messages_to_send = 108;
+            for (int i = 0; i < how_many_messages_to_send; i++) {
+                aeron_messaging_client.send_private_message("asdf lj fasljfls;aj fl;sajkdf;lasjkdfl;askjdfl;asjkfsl;akjdfsl;ak jfsla;kjfsla;djkf asl;d fjk");
+            }
+
+            if (incoming_private_message == null && incoming_public_message == null) {
+                Thread.sleep(1);
+                // Main thread checks periodically if messaging thread is still runnig.
+
+                // Check if aeron_messaging_thread is still running
+                // OR shall we use aeron_messaging_thread.getState() ?
+                if (!aeron_messaging_thread.isAlive()) {
+                    break;
+                }
+            }
         }
+        LOG.debug("AeronMessagingClient.main(): main loop is complete. That's all falks!");
+        // Need to close Aeron and MediaDriver, otherwise the program will not terminate.
+        aeron_messaging_client.close();
     }
 
     /**
@@ -232,8 +273,8 @@ public final class AeronMessagingClient implements Closeable {
      *
      * @throws ClientException On any error
      */
-    public void run()
-            throws ClientException {
+    @Override
+    public void run() {
         /**
          * Generate a one-time pad.
          */
@@ -265,8 +306,12 @@ public final class AeronMessagingClient implements Closeable {
 
             session_name = Integer.toString(all_client_publication.sessionId());
             this.waitForConnectResponse(all_client_subscription, session_name);
-        } catch (final IOException e) {
-            throw new ClientIOException(e);
+        } catch (final ClientException | IOException e) {
+            // Since now we're in Runnable and in own thread, let's catch & preserve the exceptino we got and simply return.
+            // There are some ways to throw an exception from runnable, but I didn't like them: https://stackoverflow.com/questions/11584159/is-there-a-way-to-make-runnables-run-throw-an-exception
+            this.got_exception = e;
+            LOG.error("got_exception: " + e);
+            return; // this closes the AeronMessagingClient thread (end of run())
         }
 
         /**
@@ -283,9 +328,18 @@ public final class AeronMessagingClient implements Closeable {
                         all_client_subscription,
                         all_client_publication
                 );
+
             } catch (final IOException e) {
-                throw new ClientIOException(e);
+                // Since now we're in Runnable and in own thread, let's catch & preserve the exceptino we got and simply return.
+                // There are some ways to throw an exception from runnable, but I didn't like them: https://stackoverflow.com/questions/11584159/is-there-a-way-to-make-runnables-run-throw-an-exception
+                this.got_exception = e;
+                LOG.error("got_exception: " + e);
             }
+        } catch (final Exception e) {
+            // Since now we're in Runnable and in own thread, let's catch & preserve the exceptino we got and simply return.
+            // There are some ways to throw an exception from runnable, but I didn't like them: https://stackoverflow.com/questions/11584159/is-there-a-way-to-make-runnables-run-throw-an-exception
+            this.got_exception = e;
+            LOG.error("got_exception: " + e);
         }
     }
 
@@ -318,7 +372,7 @@ public final class AeronMessagingClient implements Closeable {
         long total_messages_sent_count = 0;
         long total_messages_sent_size = 0;
         long polled_fragmetns_total_count = 0;
-        long failed_to_send_count = 0;
+        long failed_to_send_backpressured_count = 0;
         Instant main_loop_start_instant = clock.instant();
         long main_loop_start_epoch_ms = main_loop_start_instant.toEpochMilli();
         long main_loop_iteration_count = 0;
@@ -355,17 +409,45 @@ public final class AeronMessagingClient implements Closeable {
                     total_messages_sent_count++;
                     total_messages_sent_size += outgoing_message.length();
                     current_iteration_messages_sent_count++;
-                } catch (IOException ex) {
-                    // Failed to send the message, put it back into the front of the queue
-                    outgoing_messages_to_all_clients_queue.addFirst(outgoing_message);
-                    // Increase "failed_to_send_count" stats
-                    failed_to_send_count++;
-                }
-            }
 
-// stresstest
-            if (main_loop_iteration_count % 300 == 0) {
-                outgoing_messages_to_private_queue.add("asdf lj fasljfls;aj fl;sajkdf;lasjkdfl;askjdfl;asjkfsl;akjdfsl;ak jfsla;kjfsla;djkf asl;d fjk");
+                    // We should distinguish different types of exceptions thrown by MessagesHelper.send_message().
+                    // If we backpressured we need to backdown and re-enque the message along with failed_to_send_backpressured_count++;
+                    // if we got: java.io.IOException: Could not send message: Error code: Not connected!
+                    // Tthen the connection to the server is gone (for example the server was shut down).
+                    // Simply ignoring and waiting for the server to show up again will not work because after the server restart all the
+                    // clients should re-connect again (go through HELLO nnn  => CONNECT mmm, xxx, yyy => ...)
+                    // So "Not connected!" is a "game over" and we should quit the main loop to close AeronMessagingClient thread now.
+                    // Let's investigate different types of exceptions we get here:
+                    //
+                } catch (PublicationNotConnected ex) {
+                    LOG.error("Exception cought while trying to MessagesHelper.send_message(): PublicationNotConnected. Closing the main loop (closing AeronMessagingClient). You'll neeed to try to reconnect the server.");
+                    return;  // Closing the main loop (closing AeronMessagingClient). You'll neeed to try to reconnect the server.
+
+                } catch (PublicationAdminAction ex) {
+                    LOG.error("Exception cought while trying to MessagesHelper.send_message(): PublicationAdminAction. Closing the main loop (closing AeronMessagingClient). You'll neeed to try to reconnect the server.");
+                    return;  // Closing the main loop (closing AeronMessagingClient). You'll neeed to try to reconnect the server.
+
+                } catch (PublicationBackPressured ex) {
+                    LOG.error("+++WTF? Exception cought while trying to MessagesHelper.send_message(): PublicationBackPressured!?");
+                    // Failed to send the message due to backbressure, put it back into the front of the queue
+                    outgoing_messages_to_all_clients_queue.addFirst(outgoing_message);
+
+                    // Increase "failed_to_send_count" stats and continue
+                    failed_to_send_backpressured_count++;
+
+                } catch (PublicationClosed ex) {
+                    LOG.error("Exception cought while trying to MessagesHelper.send_message(): PublicationClosed. Closing the main loop (closing AeronMessagingClient). You'll neeed to try to reconnect the server.");
+                    return;  // Closing the main loop (closing AeronMessagingClient). You'll neeed to try to reconnect the server.
+
+                } catch (PublicationMaxPositionExceeded ex) {
+                    LOG.error("Exception cought while trying to MessagesHelper.send_message(): PublicationMaxPositionExceeded. Closing the main loop (closing AeronMessagingClient). You'll neeed to try to reconnect the server.");
+                    return;  // Closing the main loop (closing AeronMessagingClient). You'll neeed to try to reconnect the server.
+
+                } catch (IOException ex) {
+                    // We're in some IllegalStateException() state.
+                    LOG.error("Exception cought while trying to MessagesHelper.send_message(): We're in some IllegalStateException() state. Closing the main loop (closing AeronMessagingClient). You'll neeed to try to reconnect the server. Exception was: " + ex);
+                    return;  // Closing the main loop (closing AeronMessagingClient). You'll neeed to try to reconnect the server.
+                }
             }
 
             // Check 2 outbound queues:  2-of-2) outgoing_messages_to_private_queue
@@ -385,11 +467,43 @@ public final class AeronMessagingClient implements Closeable {
                     total_messages_sent_size += outgoing_message.length();
                     current_iteration_messages_sent_count++;
 
+                    // We should distinguish different types of exceptions thrown by MessagesHelper.send_message().
+                    // If we backpressured we need to backdown and re-enque the message along with failed_to_send_backpressured_count++;
+                    // if we got: java.io.IOException: Could not send message: Error code: Not connected!
+                    // Tthen the connection to the server is gone (for example the server was shut down).
+                    // Simply ignoring and waiting for the server to show up again will not work because after the server restart all the
+                    // clients should re-connect again (go through HELLO nnn  => CONNECT mmm, xxx, yyy => ...)
+                    // So "Not connected!" is a "game over" and we should quit the main loop to close AeronMessagingClient thread now.
+                    // Let's investigate different types of exceptions we get here:
+                    //
+                } catch (PublicationNotConnected ex) {
+                    LOG.error("Exception cought while trying to MessagesHelper.send_message(): PublicationNotConnected. Closing the main loop (closing AeronMessagingClient). You'll neeed to try to reconnect the server.");
+                    return;  // Closing the main loop (closing AeronMessagingClient). You'll neeed to try to reconnect the server.
+
+                } catch (PublicationAdminAction ex) {
+                    LOG.error("Exception cought while trying to MessagesHelper.send_message(): PublicationAdminAction. Closing the main loop (closing AeronMessagingClient). You'll neeed to try to reconnect the server.");
+                    return;  // Closing the main loop (closing AeronMessagingClient). You'll neeed to try to reconnect the server.
+
+                } catch (PublicationBackPressured ex) {
+                    LOG.error("+++WTF? Exception cought while trying to MessagesHelper.send_message(): PublicationBackPressured!?");
+                    // Failed to send the message due to backbressure, put it back into the front of the queue
+                    outgoing_messages_to_all_clients_queue.addFirst(outgoing_message);
+
+                    // Increase "failed_to_send_count" stats and continue
+                    failed_to_send_backpressured_count++;
+
+                } catch (PublicationClosed ex) {
+                    LOG.error("Exception cought while trying to MessagesHelper.send_message(): PublicationClosed. Closing the main loop (closing AeronMessagingClient). You'll neeed to try to reconnect the server.");
+                    return;  // Closing the main loop (closing AeronMessagingClient). You'll neeed to try to reconnect the server.
+
+                } catch (PublicationMaxPositionExceeded ex) {
+                    LOG.error("Exception cought while trying to MessagesHelper.send_message(): PublicationMaxPositionExceeded. Closing the main loop (closing AeronMessagingClient). You'll neeed to try to reconnect the server.");
+                    return;  // Closing the main loop (closing AeronMessagingClient). You'll neeed to try to reconnect the server.
+
                 } catch (IOException ex) {
-                    // Failed to send the message, put it back into the front of the queue
-                    outgoing_messages_to_private_queue.addFirst(outgoing_message);
-                    // Increase "failed_to_send_count" stats
-                    failed_to_send_count++;
+                    // We're in some IllegalStateException() state.
+                    LOG.error("Exception cought while trying to MessagesHelper.send_message(): We're in some IllegalStateException() state. Closing the main loop (closing AeronMessagingClient). You'll neeed to try to reconnect the server. Exception was: " + ex);
+                    return;  // Closing the main loop (closing AeronMessagingClient). You'll neeed to try to reconnect the server.
                 }
             }
 
@@ -414,7 +528,7 @@ public final class AeronMessagingClient implements Closeable {
                         // This might be terribly slow on large gueues since it will have to walk through the whole chain of objects in the queue                                        
                         //                                        + "\"incoming_messages_from_all_clients_queue_size\": " + incoming_messages_from_all_clients_queue.size() + ", "
                         + "\"polled_fragmetns_total_count\": " + polled_fragmetns_total_count + ", "
-                        + "\"failed_to_send_count\": " + failed_to_send_count + ", "
+                        + "\"failed_to_send_count\": " + failed_to_send_backpressured_count + ", "
                         + "\"main_loop_run_duration_ms\": " + main_loop_run_duration_ms + ", "
                         + "\"average_tx_message_rate_per_s\": " + average_tx_message_rate_per_s + ", "
                         + "\"average_tx_bytes_rate_per_ms\": " + average_tx_bytes_rate_per_ms + ", "
@@ -456,24 +570,57 @@ public final class AeronMessagingClient implements Closeable {
 //                        total_messages_sent_count++;
 //                        total_messages_sent_size += server_stats.length();
 //                        current_iteration_messages_sent_count++;
+//
+//
+                        // We should distinguish different types of exceptions thrown by MessagesHelper.send_message().
+                        // If we backpressured we need to backdown and re-enque the message along with failed_to_send_backpressured_count++;
+                        // if we got: java.io.IOException: Could not send message: Error code: Not connected!
+                        // Tthen the connection to the server is gone (for example the server was shut down).
+                        // Simply ignoring and waiting for the server to show up again will not work because after the server restart all the
+                        // clients should re-connect again (go through HELLO nnn  => CONNECT mmm, xxx, yyy => ...)
+                        // So "Not connected!" is a "game over" and we should quit the main loop to close AeronMessagingClient thread now.
+                        // Let's investigate different types of exceptions we get here:
+                        //
+                    } catch (PublicationNotConnected ex) {
+                        LOG.error("Exception cought while trying to MessagesHelper.send_message(): PublicationNotConnected. Closing the main loop (closing AeronMessagingClient). You'll neeed to try to reconnect the server.");
+                        return;  // Closing the main loop (closing AeronMessagingClient). You'll neeed to try to reconnect the server.
+
+                    } catch (PublicationAdminAction ex) {
+                        LOG.error("Exception cought while trying to MessagesHelper.send_message(): PublicationAdminAction. Closing the main loop (closing AeronMessagingClient). You'll neeed to try to reconnect the server.");
+                        return;  // Closing the main loop (closing AeronMessagingClient). You'll neeed to try to reconnect the server.
+
+                    } catch (PublicationBackPressured ex) {
+                        // Failed to send the message due to backbressure, put it back into the front of the queue
+                        outgoing_messages_to_all_clients_queue.addFirst(server_stats);
+
+                        // Increase "failed_to_send_count" stats and continue
+                        failed_to_send_backpressured_count++;
+
+                    } catch (PublicationClosed ex) {
+                        LOG.error("Exception cought while trying to MessagesHelper.send_message(): PublicationClosed. Closing the main loop (closing AeronMessagingClient). You'll neeed to try to reconnect the server.");
+                        return;  // Closing the main loop (closing AeronMessagingClient). You'll neeed to try to reconnect the server.
+
+                    } catch (PublicationMaxPositionExceeded ex) {
+                        LOG.error("Exception cought while trying to MessagesHelper.send_message(): PublicationMaxPositionExceeded. Closing the main loop (closing AeronMessagingClient). You'll neeed to try to reconnect the server.");
+                        return;  // Closing the main loop (closing AeronMessagingClient). You'll neeed to try to reconnect the server.
 
                     } catch (IOException ex) {
-                        // Failed to send the message, put it back into the front of the queue
-                        outgoing_messages_to_all_clients_queue.addFirst(server_stats);
-                        // Increase "failed_to_send_count" stats
-                        failed_to_send_count++;
+                        // We're in some IllegalStateException() state.
+                        LOG.error("Exception cought while trying to MessagesHelper.send_message(): We're in some IllegalStateException() state. Closing the main loop (closing AeronMessagingClient). You'll neeed to try to reconnect the server. Exception was: " + ex);
+                        return;  // Closing the main loop (closing AeronMessagingClient). You'll neeed to try to reconnect the server.
                     }
+
                 }
             }
 
-//            // Sleep 1ms only if no fragments received and there was nothing to send
-//            if ((fragments_received + current_iteration_messages_sent_count) == 0) {
-//                try {
-//                    Thread.sleep(1L);
-//                } catch (final InterruptedException e) {
-//                    Thread.currentThread().interrupt();
-//                }
-//            }
+            // Sleep 1ms only if no fragments received and there was nothing to send
+            if ((fragments_received + current_iteration_messages_sent_count) == 0) {
+                try {
+                    Thread.sleep(1L);
+                } catch (final InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+            }
         }
     }
 
@@ -493,7 +640,7 @@ public final class AeronMessagingClient implements Closeable {
             final int offset,
             final int length) {
         final String message
-                = MessagesHelper.parseMessageUTF8(buffer, offset, length);
+                = MessagesHelper.parse_message_utf8(buffer, offset, length);
         this.incoming_messages_from_all_clients_queue.add(message);
         LOG.debug("[{}] on_all_clients_message_received: {}", session_name, message);
 
@@ -515,7 +662,7 @@ public final class AeronMessagingClient implements Closeable {
             final int offset,
             final int length) {
         final String message
-                = MessagesHelper.parseMessageUTF8(buffer, offset, length);
+                = MessagesHelper.parse_message_utf8(buffer, offset, length);
         this.incoming_messages_from_private_queue.add(message);
 //        LOG.debug("[{}] on_private_message_received: {}", session_name, message);
 
@@ -527,7 +674,7 @@ public final class AeronMessagingClient implements Closeable {
             final int offset,
             final int length) {
         final String response
-                = MessagesHelper.parseMessageUTF8(buffer, offset, length);
+                = MessagesHelper.parse_message_utf8(buffer, offset, length);
 
         LOG.debug("[{}] all_client_subscription_message_handler: {}", session_name, response);
     }
@@ -663,7 +810,7 @@ public final class AeronMessagingClient implements Closeable {
             return;
         }
 
-        final String response = MessagesHelper.parseMessageUTF8(buffer, offset, length);
+        final String response = MessagesHelper.parse_message_utf8(buffer, offset, length);
 
         LOG.trace("[{}] response: {}", session_name, response);
 
@@ -783,7 +930,11 @@ public final class AeronMessagingClient implements Closeable {
 
     @Override
     public void close() {
-        this.aeron.close();
-        this.media_driver.close();
+        try {
+            closeIfNotNull(this.aeron);
+            closeIfNotNull(this.media_driver);
+        } catch (Exception ex) {
+            LOG.error("AeronMessagignClient.close() somehow failed... exception: " + ex);
+        }
     }
 }

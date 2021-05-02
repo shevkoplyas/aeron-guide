@@ -14,11 +14,11 @@ fi
 # FOR SERVER
 # 00:16:30.959 ERROR [main] com.io7m.aeron_guide.take2.EchoServer: usage: directory local-address local-initial-data-port local-initial-control-port local-clients-base-port client-count
 
-AERON_SERVER_IP=192.168.1.118
+AERON_SERVER_IP=0.0.0.0            # 192.168.1.118
 AERON_SERVER_DATA_PORT=44000
 AERON_SERVER_CONTROL_PORT=44001
 
-AERON_SERVER_DATA_DIR=/run/shm/my-aeron-server-take2
+AERON_SERVER_DATA_DIR=/run/shm/aeron-server-take2
 
 # Let's rock!
 JAVA_HOME=/usr/lib/jvm/java-8-openjdk-amd64 \

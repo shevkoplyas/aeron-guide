@@ -1,8 +1,5 @@
 package com.io7m.aeron_guide.take4.aeron_messaging.server;
 
-import com.io7m.aeron_guide.take4.aeron_messaging.server.ImmutableAeronMessagingServerConfiguration;
-import com.io7m.aeron_guide.take4.aeron_messaging.server.ImmutableAeronMessagingServerConfiguration;
-import com.io7m.aeron_guide.take4.aeron_messaging.server.ImmutableAeronMessagingServerConfiguration;
 import com.io7m.aeron_guide.take4.aeron_messaging.common.MessagesHelper;
 import com.io7m.aeron_guide.take4.aeron_messaging.common.AeronChannelsHelper;
 import io.aeron.Aeron;
@@ -26,6 +23,7 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.time.Clock;
 import java.time.Instant;
+import java.util.Enumeration;
 import java.util.Objects;
 import java.util.concurrent.ConcurrentLinkedDeque;
 import java.util.concurrent.Future;
@@ -59,7 +57,7 @@ import java.util.concurrent.Future;
  *     In particular ConcurrentLinkedDeque: https://docs.oracle.com/en/java/javase/16/docs/api/java.base/java/util/concurrent/ConcurrentLinkedDeque.html
  * </pre>
  */
-public final class AeronMessagingServer implements Closeable {
+public final class AeronMessagingServer implements Closeable, Runnable {
 
     // We end up using just one stream ID.
     // Aeron is capable of multiplexing several independent streams of messages into a single connection,
@@ -72,7 +70,7 @@ public final class AeronMessagingServer implements Closeable {
     static {
         // We also specify a stream ID when creating the subscription. Aeron is capable of
         // multiplexing several independent streams of messages into a single connection.
-        MAIN_STREAM_ID = 0x100500ff;
+        MAIN_STREAM_ID = 0x100500ff; // must be the save value on client and server
     }
 
     private final MediaDriver media_driver;
@@ -164,10 +162,18 @@ public final class AeronMessagingServer implements Closeable {
      * object.
      *
      * @param session_id
-     * @return
+     * @return message as String or null if queue is empty (no messages).
      */
     public String get_private_message(int session_id) {
         return this.clients_state_tracker.get_private_message_by_session_id(session_id);
+    }
+
+    /**
+     *
+     * @return
+     */
+    public Enumeration<Integer> list_connected_clients_session_ids() {
+        return this.clients_state_tracker.list_connected_clients_session_ids();
     }
 
     public String get_all_clients_control_channel_message() {
@@ -281,9 +287,95 @@ public final class AeronMessagingServer implements Closeable {
                         .maximumConnectionsPerAddress(3)
                         .build();
 
-        try (final AeronMessagingServer server = create(Clock.systemUTC(), config)) {
-            server.run();
+        // Start aeron_messaging_server in it's own thread, we'll use it's public methods to enqueue (send) / dequeue (receive) messages
+        final AeronMessagingServer aeron_messaging_server = create(Clock.systemUTC(), config);
+        Thread aeron_messaging_thread = new Thread(aeron_messaging_server);
+        aeron_messaging_thread.start();
+
+        // Main consumer loop
+        LOG.debug("Main thread keep chaga away while AeronMessagingClient is working in it's own separate thread...");
+        // Some activity on the main thread, which shovels/sends messages from/to aeron_messaging_client
+
+        long total_incoming_public_messages_count = 0;
+        long total_incoming_private_messages_count = 0;
+        long iteration_incoming_public_messages_count = 0;
+        long iteration_incoming_private_messages_count = 0;
+
+        Clock clock = Clock.systemUTC();
+        long last_stats_sent_epoch_ms = 0; // keep track of exact ms when report was generated to avoid sending it multiple times (loop is fast)
+        Instant main_loop_start_instant = clock.instant();
+        long main_loop_start_epoch_ms = main_loop_start_instant.toEpochMilli();
+
+        while (true) {
+            // Get current time
+            Instant now_instant = clock.instant();
+            long now_epoch_ms = now_instant.toEpochMilli();
+
+            iteration_incoming_public_messages_count = 0;
+            iteration_incoming_private_messages_count = 0;
+
+            // Try to get public-channel (all-clients) message
+            String incoming_public_message = aeron_messaging_server.get_all_clients_control_channel_message();
+            if (incoming_public_message != null) {
+                total_incoming_public_messages_count++;
+                iteration_incoming_public_messages_count++;
+            }
+
+            // Try to get private (per agent channels) messages
+            Enumeration<Integer> clients_session_ids = aeron_messaging_server.list_connected_clients_session_ids();
+            while (clients_session_ids.hasMoreElements()) {
+                // Get i-th connected client session_id
+                Integer client_session_id = clients_session_ids.nextElement();
+
+                // Try to read 1 private message from i-th connected client (by given session_id)
+                String private_message = aeron_messaging_server.get_private_message(client_session_id);
+                if (private_message != null) {
+
+                    // For better stats, let's consider server's main_loop_start_epoch_ms when we got 1st private message from the client
+                    if (total_incoming_private_messages_count == 0) {
+                        // First ever private message received!
+                        main_loop_start_instant = clock.instant();
+                        main_loop_start_epoch_ms = main_loop_start_instant.toEpochMilli();
+                    }
+
+                    total_incoming_private_messages_count++;
+                    iteration_incoming_private_messages_count++;
+                }
+            }
+
+            // Only sleep 1ms in case we haven't received any messages, otherwise it is a "busy loop"
+            if (iteration_incoming_public_messages_count == 0 && iteration_incoming_private_messages_count == 0) {
+                Thread.sleep(1);
+                // Main thread checks periodically if messaging thread is still runnig.
+
+                // Check if aeron_messaging_thread is still running
+                // OR shall we use aeron_messaging_thread.getState() ?
+                if (!aeron_messaging_thread.isAlive()) {
+                    break;
+                }
+            }
+
+            // Print "main loop stats" once in a while
+            if (now_epoch_ms > last_stats_sent_epoch_ms + 5000
+                    && last_stats_sent_epoch_ms != now_epoch_ms) {
+                // Time to generate some stats on the "consumer main loop"
+                long main_loop_run_duration_ms = now_epoch_ms - main_loop_start_epoch_ms + 1;  // +1 is a cheesy way to avoid /0 and it won't matter after few seconds run
+
+                long average_rx_private_messages_per_s = total_incoming_private_messages_count * 1000 / main_loop_run_duration_ms;
+
+                LOG.debug("Thread name: " + Thread.currentThread().getName()
+                        + " Thread toString(): " + Thread.currentThread().toString()
+                        + " total_incoming_public_messages_count: " + total_incoming_public_messages_count
+                        + " total_incoming_private_messages_count: " + total_incoming_private_messages_count
+                        + " average_rx_private_messages_per_s: " + average_rx_private_messages_per_s + " <--- !!!"
+                );
+                last_stats_sent_epoch_ms = now_epoch_ms;
+            }
         }
+        LOG.debug("AeronMessagingServer.main(): main loop is complete. That's all falks!");
+        // Need to close Aeron and MediaDriver, otherwise the program will not terminate.
+        aeron_messaging_server.close();
+
     }
 
     public int get_number_of_connected_clients() {
@@ -320,14 +412,12 @@ public final class AeronMessagingServer implements Closeable {
                 UnsafeBuffer tmp_send_buffer = new UnsafeBuffer(BufferUtil.allocateDirectAligned(1024, 16));
                 Instant main_loop_start_instant = clock.instant();
                 long main_loop_start_epoch_ms = main_loop_start_instant.toEpochMilli();
-                long main_loop_iteration_count = 0;
                 long stats_report_count = 0;
                 long last_stats_sent_epoch_ms = 0; // keep track of exact ms when report was generated to avoid sending it multiple times (loop is fast)
 
                 LOG.debug("Server is ready and is waiting for clients to connect...");
 
                 while (true) {
-                    main_loop_iteration_count++;
 
                     // Get current time in 2 forms: Instant and epoch_ms (one will be used for human-readable time, other for "robots":)
                     Instant now_instant = clock.instant();
@@ -423,7 +513,7 @@ public final class AeronMessagingServer implements Closeable {
 
                     // Every 10 sec send PUBLISH stats message via all_clients_publication with some messaging-server stats.
                     // Only if at least 1 client is connected.
-                    if (now_epoch_ms > last_stats_sent_epoch_ms + 10000
+                    if (now_epoch_ms > last_stats_sent_epoch_ms + 15000
                             // && all_clients_publication.isConnected()  - let's pring stats even when no clients connected, just for debug, and we'll .send_message() only if anybody connected
                             && last_stats_sent_epoch_ms != now_epoch_ms) {
                         // Calculate some stats
@@ -524,7 +614,7 @@ public final class AeronMessagingServer implements Closeable {
             final int length,
             final Header header) {
         final String message
-                = MessagesHelper.parseMessageUTF8(buffer, offset, length);
+                = MessagesHelper.parse_message_utf8(buffer, offset, length);
 
         final String session_name
                 = Integer.toString(header.sessionId());
@@ -597,7 +687,11 @@ public final class AeronMessagingServer implements Closeable {
 
     @Override
     public void close() {
-        this.aeron.close();
-        this.media_driver.close();
+        try {
+            closeIfNotNull(this.aeron);
+            closeIfNotNull(this.media_driver);
+        } catch (Exception ex) {
+            LOG.error("AeronMessagignServer.close() somehow failed... exception: " + ex);
+        }
     }
 }
