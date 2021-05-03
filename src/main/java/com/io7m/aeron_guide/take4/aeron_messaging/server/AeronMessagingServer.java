@@ -254,8 +254,24 @@ public final class AeronMessagingServer implements Closeable, Runnable {
     }
 
     /**
+     * Let's move aeron_messaging_server_thread into the class members since we'll
+     * need the reference to that thread if/when server.close() is called (for example
+     * we're shutting down the framework and need to send .close() to all it's parts/components).
+     * 
+     */
+    private Thread aeron_messaging_server_thread = null;
+    
+    /**
+     * Let's say server.is_alive == true only when server's messaging thread is_alive.
+     * @return 
+     */
+    public boolean is_alive() {
+        return aeron_messaging_server_thread != null && aeron_messaging_server_thread.isAlive();
+    }
+
+    /**
      * The main() f-n is a simple example on how to instantiate and run the
-     * AeronMessagingClient class in its own thread. It is not an "entry point"
+     * AeronMessagingServer class in its own thread. It is not an "entry point"
      * of the class and is here only for demo purposes. The actual "entry point"
      * is the run() method, which will be engaged when you call thread.start()
      * (see main() for details).
@@ -273,6 +289,7 @@ public final class AeronMessagingServer implements Closeable, Runnable {
             System.exit(1);
         }
 
+        // Parse command-line args
         final Path directory = Paths.get(args[0]);
         final InetAddress local_address = InetAddress.getByName(args[1]);
         final int local_initial_data_port = Integer.parseUnsignedInt(args[2]);
@@ -280,7 +297,8 @@ public final class AeronMessagingServer implements Closeable, Runnable {
         final int local_clients_base_port = Integer.parseUnsignedInt(args[4]);
         final int client_count = Integer.parseUnsignedInt(args[5]);
 
-        final AeronMessagingServerConfiguration config
+        // Create AeronMessagingServerConfiguration object
+        final AeronMessagingServerConfiguration configuration
                 = ImmutableAeronMessagingServerConfiguration.builder()
                         .baseDirectory(directory)
                         .localAddress(local_address)
@@ -292,9 +310,9 @@ public final class AeronMessagingServer implements Closeable, Runnable {
                         .build();
 
         // Start aeron_messaging_server in it's own thread, we'll use it's public methods to enqueue (send) / dequeue (receive) messages
-        final AeronMessagingServer aeron_messaging_server = create(Clock.systemUTC(), config);
-        Thread aeron_messaging_thread = new Thread(aeron_messaging_server);
-        aeron_messaging_thread.start();
+        final AeronMessagingServer aeron_messaging_server = create(Clock.systemUTC(), configuration);
+        aeron_messaging_server.aeron_messaging_server_thread = new Thread(aeron_messaging_server);
+        aeron_messaging_server.aeron_messaging_server_thread.start();
 
         //
         // Main consumer loop (it uses aeron_messaging_server to send receive messages from the client(s))
@@ -316,10 +334,11 @@ public final class AeronMessagingServer implements Closeable, Runnable {
         while (true) {
             main_loop_iterations_count++;
 
-            // Get current time
+            // Get current iteration time
             Instant now_instant = clock.instant();
             long now_epoch_ms = now_instant.toEpochMilli();
 
+            // Per-iteration counts
             iteration_incoming_public_messages_count = 0;
             iteration_incoming_private_messages_count = 0;
 
@@ -364,12 +383,12 @@ public final class AeronMessagingServer implements Closeable, Runnable {
 
                 // Check if aeron_messaging_thread is still running
                 // OR shall we use aeron_messaging_thread.getState() ?
-                if (!aeron_messaging_thread.isAlive()) {
+                if (!aeron_messaging_server.aeron_messaging_server_thread.isAlive()) {
                     break;
                 }
             }
 
-            // Print "main loop stats" once in a while
+            // Log "main loop stats" once in a while
             if (now_epoch_ms > last_stats_sent_epoch_ms + 5000
                     && last_stats_sent_epoch_ms != now_epoch_ms) {
                 // Time to generate some stats on the "consumer main loop"
@@ -703,11 +722,27 @@ public final class AeronMessagingServer implements Closeable, Runnable {
 
     @Override
     public void close() {
+        // Interrupt aeron_messaging_server_thread
+        try {
+            if (this.aeron_messaging_server_thread != null) {
+                this.aeron_messaging_server_thread.interrupt();
+            }
+        } catch (Exception ex) {
+            LOG.error("AeronMessagignServer.close() somehow failed to interrupt aeron_messaging_server_thread... exception: " + ex);
+        }
+
+        // Try to close Aeron
         try {
             closeIfNotNull(this.aeron);
+        } catch (Exception ex) {
+            LOG.error("AeronMessagignServer.close() somehow failed to close aeron... exception: " + ex);
+        }
+
+        // Try to close MediaDriver
+        try {
             closeIfNotNull(this.media_driver);
         } catch (Exception ex) {
-            LOG.error("AeronMessagignServer.close() somehow failed... exception: " + ex);
+            LOG.error("AeronMessagignServer.close() somehow failed to close media_driver... exception: " + ex);
         }
     }
 }
