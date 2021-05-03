@@ -254,16 +254,19 @@ public final class AeronMessagingServer implements Closeable, Runnable {
     }
 
     /**
-     * Let's move aeron_messaging_server_thread into the class members since we'll
-     * need the reference to that thread if/when server.close() is called (for example
-     * we're shutting down the framework and need to send .close() to all it's parts/components).
-     * 
+     * Let's move aeron_messaging_server_thread into the class members since
+     * we'll need the reference to that thread if/when server.close() is called
+     * (for example we're shutting down the framework and need to send .close()
+     * to all it's parts/components).
+     *
      */
     private Thread aeron_messaging_server_thread = null;
-    
+
     /**
-     * Let's say server.is_alive == true only when server's messaging thread is_alive.
-     * @return 
+     * Let's say server.is_alive == true only when server's messaging thread
+     * is_alive.
+     *
+     * @return
      */
     public boolean is_alive() {
         return aeron_messaging_server_thread != null && aeron_messaging_server_thread.isAlive();
@@ -283,6 +286,7 @@ public final class AeronMessagingServer implements Closeable, Runnable {
     public static void main(
             final String[] args)
             throws Exception {
+
         if (args.length < 6) {
             LOG.error(
                     "usage: directory local-address local-initial-data-port local-initial-control-port local-clients-base-port client-count");
@@ -330,6 +334,15 @@ public final class AeronMessagingServer implements Closeable, Runnable {
         Instant main_loop_start_instant = clock.instant();
         long main_loop_start_epoch_ms = main_loop_start_instant.toEpochMilli();
         long main_loop_iterations_count = 0;
+        // Sometimes we can't read just 1 incoming message in 1 main loop iteration since
+        // it might fundamentally limit our throughput (main loop does other things,
+        // so repeating them for each one incoming message is too cpu-expensive).
+        // On the other hand we can't process ALL incoming messages, since the queue might
+        // be already "too full" and a new messages stream is constantly coming, so this
+        // variable would allow us to limit the max number of messages to process in one main loop iteration.
+        // Reasonable values would be a couple hundreds (unless your messages are some huge JSON objects,
+        // in which case you probably want to make this value down to a couple dosen). Play with it.
+        int number_of_messages_to_read_in_one_go_limit = 100;
 
         while (true) {
             main_loop_iterations_count++;
@@ -355,13 +368,21 @@ public final class AeronMessagingServer implements Closeable, Runnable {
                 // Get i-th connected client session_id
                 Integer client_session_id = clients_session_ids.nextElement();
 
-                // Try to read 1 private message from i-th connected client (by given session_id)
-                String private_message = aeron_messaging_server.get_private_message(client_session_id);
-//                if (private_message != null) {
-                // Keep shoveling messages for this session_id until we read them all
-                while (private_message != null) {
+                // Count how many private messages we've got from this particular
+                // session_id during current main loop iteration. We need to know
+                // this count to be able to track number_of_messages_to_read_in_one_go_limit.
+                long ith_session_private_message_iteration_count = 0;
 
-                    // For better stats, let's consider server's main_loop_start_epoch_ms when we got 1st private message from the client
+                // Try to read N private messages from i-th connected client (by given session_id)
+                // Keep shoveling N private messages from this session_id until
+                // we read them all or until we hit the limit (number_of_messages_to_read_in_one_go_limit)
+                String private_message = aeron_messaging_server.get_private_message(client_session_id);
+                while (private_message != null && ith_session_private_message_iteration_count < number_of_messages_to_read_in_one_go_limit) {
+                    ith_session_private_message_iteration_count++;
+
+                    // For better stats, let's consider server's main_loop_start_epoch_ms when we got 1st private message from the client.
+                    // TODO: redo the whole stats collection logic, so it works properly even if the server is running for few weeks and
+                    // the client just connected. The messages rate calculation can not rely on the server lifetime number of seconds...
                     if (total_incoming_private_messages_count == 0) {
                         // First ever private message received!
                         main_loop_start_instant = clock.instant();
@@ -396,7 +417,7 @@ public final class AeronMessagingServer implements Closeable, Runnable {
 
                 long average_rx_private_messages_per_s = total_incoming_private_messages_count * 1000 / main_loop_run_duration_ms;
                 long main_loop_iterations_rate_per_ms = main_loop_iterations_count / main_loop_run_duration_ms;
-                
+
                 LOG.debug("Main consumer loop: thread: " + Thread.currentThread().toString()
                         + " total_incoming_public_messages_count: " + total_incoming_public_messages_count
                         + " total_incoming_private_messages_count: " + total_incoming_private_messages_count
