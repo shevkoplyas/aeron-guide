@@ -40,8 +40,11 @@ other projects. In particular AeronMessagingServer is:
    - is adding all received messages into concurrent list(s)
 
 Next "take4" added, which is no longer ECHO server, instead adding queues for all the incoming and outgoing messages.
-The goal of "take4" is to make it generic bass to exchange messages between a server and arbitrary number (<100) clients
-under good load (max bandwidth yet to be determined after "take4" is complete).
+The goal of "take4" is to make the whole aeron client/server as one of the transport classes for 
+another project: "Delivery Service" https://github.com/shevkoplyas/delivery_service, which facilitates the messages exchange
+between a delivery_service server part (all the instances on the "delivery_service" side can communicate by sending/receiving
+messages) and arbitrary number of remote clients (<100) clients under good load (max bandwidth yet to be determined after
+"take4" is complete, but it seems it can easily pump 60-70K small messages per second).
  
 Update:
 The "take4" now represent 2 main classes:
