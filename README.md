@@ -68,6 +68,7 @@ method (which is thread safe).
 
 
 Beautiful ascii-art, which tells the whole story:
+<pre>
   _______________________                                               ______________________
  |                       |                                             |                      |
  |          subscription | <===== all-clients channel ================<| publication          |
@@ -85,6 +86,8 @@ Beautiful ascii-art, which tells the whole story:
  |                       |                                             | session_id / client  |
  |                       |                                             |                      |
  -------------------------                                             ------------------------
+
+</pre>
 
 Anything the server sends via "all-clients" publication is going to be sent to all connected clients.
 This is great for some cases, but not desirable for others.
