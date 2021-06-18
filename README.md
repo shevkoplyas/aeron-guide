@@ -1,7 +1,6 @@
 # aeron-guide
-An Aeron tutorial
 
-[Short description]
+## Short description
 
 This project is a fork from the awesome Aeron guide created by Mark Raynsford, which you can find here: <br>
 http://www.io7m.com/documents/aeron-guide/
@@ -14,7 +13,7 @@ https://github.com/io7m/aeron-guide
 
 -------------------------------------------------------------------------------
 
-[Long description]
+## Long description
 
 A mindlessly simple Echo server by Mark Raynsford was found here:
  http://www.io7m.com/documents/aeron-guide/
@@ -99,41 +98,47 @@ The server keeps track of all the successfully connected clients by the class Cl
 Each connected client got assigned unique session_id int value.
 
 While testing different "stresstest" modes I found that when client/server are running on the same machine:
+
+```
     8cores, 8G of RAM, Ubuntu 20.04.2 LTS, 
     java -version
         openjdk version "1.8.0_292"
         OpenJDK Runtime Environment (build 1.8.0_292-8u292-b10-0ubuntu1~20.04-b10)
         OpenJDK 64-Bit Server VM (build 25.292-b10, mixed mode)
     Aeron version 1.25.1
+```
+
 And client is sending to the server via "private" channel small (100 bytes) messages,
 then everything works stable up to 125K messages per second! (way more than I need:)
 
 Here some notes on other different "speeds" I tried and ~150K messages / second seems to be highest stable rate,
 but of course things can be optimized alot (for example instead of treating each message as a String we could
 use Simple Binary Encoding (SBE) and we can optimize lots and lots of things in the "take4":
-            // Define how many messages to inject into the queue in 1 iteration. Note: we have ~1000 iterations / sec due to 1ms sleep.
+```
+// Define how many messages to inject into the queue in 1 iteration. Note: we have ~1000 iterations / sec due to 1ms sleep.
 //            int how_many_messages_to_send = 300; // ~100K messages per second: does not fly.. crushes something in Aeron driver
 //            int how_many_messages_to_send = 200; // ~200K messages per second: starts then slip down to ~170-180K messages / second throughput, then network UDP shows spikes with pauses (instead of steady flat UDP bps/pps lines)
 //            int how_many_messages_to_send = 160; // ~150K messages per second: works great for hours,   stable (20Kpps, 24.5MiBps = 196mbps shown by "bmon" v.4.0)
 //            int how_many_messages_to_send = 125; // ~120K messages per second: works great for hours,   stable (16Kpps, 19MiBps = 152mbps shown by "bmon" v.4.0)
 //            int how_many_messages_to_send = 110; // ~100K messages per second: works great > 7 hours straight, (13.5Kpps, 16MiBps = 128mbps shown by "bmon" v.4.0) no errors, no losses, bps/pps on "lo" i-face are perfect flat lines!
-
+```
 
 -------------------------------------------------------------------------------
-[More details on installed Aeron, docs, versions, etc.]
+# More details on installed Aeron, docs, versions, etc.
 
-# Docs on Aeron by all versions!
+## Docs on Aeron by all versions!
 https://www.javadoc.io/doc/io.aeron/aeron-driver/1.12.0/io/aeron/Publication.html#isConnected--
 
-# Keep your Aeron version up-to-date by periodically reviewing official Aeron releases:
+## Keep your Aeron version up-to-date by periodically reviewing official Aeron releases:
 https://github.com/real-logic/aeron/releases
 
 For example today (30-Apr-2021) the latest release is "1.31.2" published on Feb 14, 2021,
 but we use 1.8.2!
 
-# To check which Aeron version you require as as dependency check pom.xml file.
+## To check which Aeron version you require as as dependency check pom.xml file.
 
-# To check which Aeron version(s) maven have installed on your machine:
+## To check which Aeron version(s) maven have installed on your machine:
+<pre>
 tree ~/.m2/repository/io/aeron
 /home/dima/.m2/repository/io/aeron
 ├── aeron-agent
@@ -246,3 +251,4 @@ Jan, 2020
 1.24.x      <--- compiles fine
 1.24.0	
 Nov, 2019
+</pre>
