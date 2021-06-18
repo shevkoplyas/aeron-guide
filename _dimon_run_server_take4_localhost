@@ -9,10 +9,8 @@ if [ $? -ne 0 ]; then
     exit 1
 fi
 
-# FOR CLIENT:
-#
-# FOR SERVER
-# 00:16:30.959 ERROR [main] com.io7m.aeron_guide.take2.EchoServer: usage: directory local-address local-initial-data-port local-initial-control-port local-clients-base-port client-count
+# Usage for server:
+# com.io7m.aeron_guide.take4.aeron_messaging.server.AeronMessagingServer directory local-address local-initial-data-port local-initial-control-port local-clients-base-port client-count
 
 AERON_SERVER_IP=127.0.0.1
 AERON_SERVER_DATA_PORT=44000

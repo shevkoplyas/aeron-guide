@@ -264,7 +264,8 @@ public final class AeronMessagingClient implements Closeable, Runnable {
 //            int how_many_messages_to_send = 200; // ~200K messages per second: starts then slip down to ~170-180K messages / second throughput, then network UDP shows spikes with pauses (instead of steady flat UDP bps/pps lines)
 //                int how_many_messages_to_send = 160; // ~150K messages per second: works great for hours, stable (20Kpps, 24.5MiBps = 196mbps shown by "bmon" v.4.0)
 //            int how_many_messages_to_send = 125; // ~120K messages per second: works great for hours, stable (16Kpps, 19MiBps = 152mbps shown by "bmon" v.4.0)
-                int how_many_messages_to_send = 110; // ~100K messages per second: works great > 7 hours straight, no errors, no losses, bps/pps on "lo" i-face are perfect flat lines
+//                int how_many_messages_to_send = 110; // ~100K messages per second: works great > 7 hours straight, no errors, no losses, bps/pps on "lo" i-face are perfect flat lines
+                int how_many_messages_to_send = 1;
 
                 // Enqueue N messages to be sent via the "private per client" channel to the server.
                 for (int i = 0; i < how_many_messages_to_send; i++) {
@@ -273,6 +274,7 @@ public final class AeronMessagingClient implements Closeable, Runnable {
 
                 // If there were no incoming messages (no via "all-clients" nor via "private per client" channel), then sleep 1ms
                 if (incoming_private_message == null && incoming_public_message == null) {
+Thread.sleep(1000);
                     Thread.sleep(1);
                     // Main thread checks periodically if messaging thread is still runnig.
 

@@ -335,15 +335,19 @@ public final class AeronMessagingServer implements Closeable, Runnable {
         long main_loop_start_epoch_ms = main_loop_start_instant.toEpochMilli();
         long main_loop_iterations_count = 0;
         // Sometimes we can't read just 1 incoming message in 1 main loop iteration since
-        // it might fundamentally limit our throughput (main loop does other things,
-        // so repeating them for each one incoming message is too cpu-expensive).
+        // it might fundamentally limit the throughput of our application (for example the main
+        // loop of our app does lots of other things, so processing only one message per one
+        // iteration can be too cpu-expensive).
         // On the other hand we can't process ALL incoming messages, since the queue might
-        // be already "too full" and a new messages stream is constantly coming, so this
-        // variable would allow us to limit the max number of messages to process in one main loop iteration.
+        // be already "too full" and a new messages stream is constantly coming thus we would be blocked
+        // at this attempt to process all the imcoming messages at once.
+        // As a solution let's introduce new variable: "number_of_messages_to_read_in_one_go_limit",
+        // which would allow us to limit the max number of messages to process in one main loop iteration.
         // Reasonable values would be a couple hundreds (unless your messages are some huge JSON objects,
         // in which case you probably want to make this value down to a couple dosen). Play with it.
         int number_of_messages_to_read_in_one_go_limit = 100;
 
+        // This "main loop" mimicking the demo application (aka "consumer loop"), that created AeronMessagingServer instance.
         while (true) {
             main_loop_iterations_count++;
 
